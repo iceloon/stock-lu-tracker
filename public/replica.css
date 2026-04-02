@@ -1,0 +1,463 @@
+/* Replica Home Layout */
+.hidden {
+  display: none !important;
+}
+
+body.replica-body {
+  margin: 0;
+  padding: 70px 12px 28px;
+  background: #f4f5f8;
+  font-family: "PingFang SC", "Helvetica Neue", Arial, sans-serif;
+}
+
+.apple-nav {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  backdrop-filter: saturate(180%) blur(18px);
+  background: rgba(245, 245, 247, 0.78);
+  border-bottom: 1px solid rgba(0, 0, 0, 0.06);
+}
+
+.apple-nav-inner {
+  width: min(1240px, 92vw);
+  margin: 0 auto;
+  height: 52px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.nav-brand {
+  margin: 0;
+  font-size: 0.88rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: #111;
+}
+
+.nav-subtitle {
+  margin: 0;
+  color: #6e6e73;
+  font-size: 0.8rem;
+}
+
+.nav-links {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.nav-link-btn {
+  text-decoration: none;
+  color: #1d1d1f;
+  border: 1px solid rgba(0, 0, 0, 0.1);
+  border-radius: 999px;
+  min-height: 28px;
+  display: inline-flex;
+  align-items: center;
+  padding: 0 11px;
+  font-size: 0.78rem;
+  background: rgba(255, 255, 255, 0.75);
+  transition: 0.2s ease;
+}
+
+.nav-link-btn:hover {
+  background: #fff;
+  border-color: rgba(0, 0, 0, 0.18);
+}
+
+.replica-wrap {
+  width: min(920px, 96vw);
+  margin: 0 auto;
+  display: grid;
+  gap: 12px;
+}
+
+.replica-card {
+  background: #fff;
+  border: 1px solid #e8ebf1;
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(35, 45, 64, 0.04);
+  padding: 14px 14px 16px;
+}
+
+.replica-top {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.replica-tabs {
+  display: inline-flex;
+  border: 1px solid #e6e9ef;
+  border-radius: 3px;
+  overflow: hidden;
+  background: #f3f4f7;
+}
+
+.replica-tab-btn {
+  border: 0;
+  background: #f3f4f7;
+  color: #596273;
+  min-width: 118px;
+  height: 34px;
+  padding: 0 14px;
+  font-size: 15px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  cursor: pointer;
+}
+
+.replica-tab-btn:focus-visible {
+  outline: 2px solid #2f6fff;
+  outline-offset: -2px;
+  z-index: 1;
+}
+
+.replica-tab-btn.active {
+  background: #ffffff;
+  color: #2f394a;
+  font-weight: 600;
+}
+
+.tab-icon {
+  font-size: 14px;
+  opacity: 0.88;
+}
+
+.month-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  color: #6d7686;
+  font-size: 13px;
+}
+
+.month-switch select {
+  min-height: 30px;
+  height: 30px;
+  border-radius: 4px;
+  border: 1px solid #e1e5ec;
+  background: #fff;
+  color: #2f3a4a;
+  font-size: 13px;
+  padding: 0 8px;
+}
+
+.overview-strip {
+  margin-bottom: 12px;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.overview-item {
+  border: 1px solid #e8ebf1;
+  border-radius: 4px;
+  background: #fafbfd;
+  padding: 9px 10px;
+}
+
+.overview-label {
+  margin: 0;
+  color: #8d96a4;
+  font-size: 12px;
+}
+
+.overview-value {
+  margin: 6px 0 0;
+  color: #2f3a4a;
+  font-size: 19px;
+  font-weight: 700;
+  line-height: 1.15;
+}
+
+.replica-view.hidden {
+  display: none;
+}
+
+.replica-subsection {
+  margin-top: 14px;
+}
+
+.sub-title {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+  line-height: 1.2;
+}
+
+.sub-title::before {
+  display: inline-block;
+  margin-right: 8px;
+}
+
+.sub-title.open {
+  color: #2f6fff;
+}
+
+.sub-title.open::before {
+  content: "⊕";
+}
+
+.sub-title.close {
+  color: #e95f66;
+}
+
+.sub-title.close::before {
+  content: "⊖";
+}
+
+.replica-table-wrap {
+  border: 1px solid #e8ebf1;
+  border-radius: 3px;
+  background: #fff;
+}
+
+.replica-table {
+  width: 100%;
+  min-width: 760px;
+  border-collapse: collapse;
+}
+
+.replica-table th,
+.replica-table td {
+  border-bottom: 1px solid #edf0f5;
+  padding: 10px 10px;
+  font-size: 14px;
+  line-height: 1.25;
+}
+
+.replica-table th {
+  position: static;
+  background: #f6f7fa;
+  color: #677083;
+  font-weight: 600;
+}
+
+.replica-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.stock-name {
+  color: #2cb8ef;
+  text-decoration: none;
+}
+
+.stock-name:hover {
+  text-decoration: underline;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  height: 20px;
+  min-width: 48px;
+  padding: 0 8px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.badge.buy {
+  background: #e8f8ef;
+  color: #2fa76d;
+}
+
+.badge.sell {
+  background: #fdecee;
+  color: #ea6a72;
+}
+
+.badge.hold {
+  background: #f2f3f5;
+  color: #9aa2ad;
+}
+
+.badge.new {
+  background: #edf2ff;
+  color: #4f73de;
+}
+
+.delta-pos {
+  color: #33b579;
+  font-weight: 600;
+}
+
+.delta-neg {
+  color: #ef6b73;
+  font-weight: 600;
+}
+
+.delta-zero {
+  color: #8d96a4;
+  font-weight: 600;
+}
+
+.cost-cell {
+  color: #323d50;
+  font-weight: 600;
+}
+
+.history-icon {
+  color: #8d96a4;
+  font-size: 13px;
+}
+
+.replica-empty {
+  text-align: center;
+  color: #a0a8b4;
+}
+
+.networth-card {
+  padding: 12px 14px 14px;
+}
+
+.networth-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 8px;
+}
+
+.networth-head h3 {
+  margin: 0;
+  font-size: 16px;
+  font-weight: 600;
+  color: #2f3a4a;
+}
+
+.networth-head p {
+  margin: 0;
+  font-size: 12px;
+  color: #8c95a4;
+}
+
+.networth-canvas-wrap {
+  border: 1px solid #e8ebf1;
+  border-radius: 4px;
+  background: #fff;
+  padding: 8px;
+}
+
+.chart-empty {
+  margin: 0;
+  min-height: 280px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: #9da5b2;
+  font-size: 13px;
+}
+
+#monthlyNetworthChart {
+  width: 100% !important;
+  height: 280px !important;
+}
+
+@media (max-width: 860px) {
+  .replica-top {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .replica-tabs {
+    width: 100%;
+  }
+
+  .replica-tab-btn {
+    flex: 1;
+  }
+
+  .month-switch {
+    justify-content: space-between;
+  }
+
+  .networth-head {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+
+  .overview-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 680px) {
+  body.replica-body {
+    padding-top: 64px;
+  }
+
+  .apple-nav-inner {
+    width: 95vw;
+    height: 48px;
+  }
+
+  .nav-subtitle {
+    display: none;
+  }
+
+  .replica-wrap {
+    width: 98vw;
+  }
+
+  .replica-card {
+    padding: 12px 10px 12px;
+  }
+
+  .overview-strip {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .overview-value {
+    font-size: 17px;
+  }
+
+  .replica-table {
+    min-width: 0;
+    table-layout: fixed;
+  }
+
+  .replica-table th,
+  .replica-table td {
+    padding: 8px 6px;
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .replica-table.adjust-table th:nth-child(5),
+  .replica-table.adjust-table td:nth-child(5) {
+    display: none;
+  }
+
+  .replica-table.open-table th:nth-child(4),
+  .replica-table.open-table td:nth-child(4),
+  .replica-table.close-table th:nth-child(4),
+  .replica-table.close-table td:nth-child(4) {
+    display: none;
+  }
+
+  .replica-table.latest-table th:nth-child(4),
+  .replica-table.latest-table td:nth-child(4) {
+    display: none;
+  }
+
+  #monthlyNetworthChart {
+    height: 220px !important;
+  }
+
+  .chart-empty {
+    min-height: 220px;
+  }
+}

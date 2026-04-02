@@ -1,0 +1,21 @@
+{
+  "name": "stock-lu-tracker",
+  "version": "0.1.0",
+  "description": "Local stock portfolio tracker with month-end update workflow.",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js"
+  },
+  "keywords": [
+    "portfolio",
+    "stocks",
+    "tracker"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.21.2",
+    "tesseract.js": "^7.0.0"
+  }
+}

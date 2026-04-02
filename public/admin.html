@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>后台配置</title>
+    <link rel="stylesheet" href="/admin.css" />
+  </head>
+  <body>
+    <nav class="apple-nav">
+      <div class="apple-nav-inner">
+        <p class="nav-brand">Portfolio OS</p>
+        <div class="nav-links">
+          <p class="nav-subtitle">后台配置页</p>
+          <a class="nav-link-btn" href="/">返回主页</a>
+        </div>
+      </div>
+    </nav>
+
+    <main class="app-shell config-shell">
+      <section class="panel config-panel">
+        <div class="panel-head">
+          <h2>自动抓取配置</h2>
+          <p>超级鹿鼎公</p>
+        </div>
+
+        <form id="autoConfigForm" class="form-grid compact-form">
+          <label>
+            自动同步
+            <select name="enabled">
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </label>
+          <label>
+            同步间隔（分钟）
+            <input name="intervalMinutes" type="number" min="15" max="1440" value="180" />
+          </label>
+          <label>
+            单源抓取条数
+            <input name="maxPostsPerSource" type="number" min="1" max="20" value="6" />
+          </label>
+          <label>
+            OCR 识别
+            <select name="ocrEnabled">
+              <option value="true">开启</option>
+              <option value="false">关闭</option>
+            </select>
+          </label>
+          <label>
+            每条帖子最多识别图片数
+            <input name="ocrMaxImagesPerPost" type="number" min="1" max="5" value="1" />
+          </label>
+          <label class="full-row">
+            置顶帖子链接（每行一条，优先抓取）
+            <textarea
+              name="pinnedPostUrls"
+              rows="3"
+              placeholder="https://xueqiu.com/8790885129/381996320"
+            >https://xueqiu.com/8790885129/381996320</textarea>
+          </label>
+          <label class="full-row">
+            雪球标题匹配正则（历史回溯过滤）
+            <input
+              name="xueqiuTitleRegex"
+              placeholder="游戏仓\\s*20\\d{2}\\s*年\\s*\\d{1,2}\\s*月\\s*PS图"
+              value="游戏仓\\s*20\\d{2}\\s*年\\s*\\d{1,2}\\s*月\\s*PS图"
+            />
+          </label>
+          <label>
+            回溯最大页数
+            <input name="backfillMaxPages" type="number" min="1" max="120" value="36" />
+          </label>
+          <label>
+            回溯每页条数
+            <input name="backfillPageSize" type="number" min="5" max="50" value="20" />
+          </label>
+          <label>
+            关键词（逗号分隔）
+            <input
+              name="keywords"
+              placeholder="最新持仓, 调仓, 新开仓, 已清仓"
+              value="最新持仓,调仓,新开仓,已清仓,持仓,组合"
+            />
+          </label>
+          <label class="full-row">
+            雪球 Cookie（xq_a_token 等）
+            <textarea name="xueqiuCookie" rows="3" placeholder="粘贴完整 Cookie"></textarea>
+          </label>
+          <label class="full-row">
+            微博 Cookie（SUB 等）
+            <textarea name="weiboCookie" rows="3" placeholder="粘贴完整 Cookie"></textarea>
+          </label>
+
+          <label class="full-row">
+            说明
+            <input value="Cookie 仅本地保存，用于自动抓取超级鹿鼎公持仓帖子" readonly />
+          </label>
+
+          <div class="full-row inline-actions">
+            <button class="btn primary" type="submit">保存自动配置</button>
+            <button class="btn" type="button" id="runAutoSyncBtn">立即抓取一次</button>
+            <button class="btn" type="button" id="runBackfillBtn">回溯历史标题帖子</button>
+            <button class="btn" type="button" id="loadCatalogBtn">抓取全部月份目录</button>
+            <button class="btn primary" type="button" id="importSelectedBtn">导入选中月份</button>
+            <a class="btn btn-link" href="/">返回主页看板</a>
+          </div>
+          <p class="inline-status full-row config-status" id="autoSyncText">等待首次自动抓取</p>
+        </form>
+      </section>
+
+      <section class="grid two-col result-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>最新抓取持仓</h2>
+            <p id="latestSnapshotMeta">暂无抓取结果</p>
+          </div>
+          <div class="table-wrap short">
+            <table>
+              <thead>
+                <tr>
+                  <th>证券代码</th>
+                  <th>证券名称</th>
+                  <th>可用/持仓</th>
+                  <th>成本价</th>
+                  <th>最新价</th>
+                  <th>市值</th>
+                  <th>浮动盈亏</th>
+                  <th>盈亏比例(%)</th>
+                </tr>
+              </thead>
+              <tbody id="masterRowsBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>同步日志</h2>
+            <p>最近 20 条</p>
+          </div>
+          <div class="table-wrap short">
+            <table>
+              <thead>
+                <tr>
+                  <th>时间</th>
+                  <th>级别</th>
+                  <th>信息</th>
+                </tr>
+              </thead>
+              <tbody id="syncLogsBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="grid two-col result-grid">
+        <section class="panel">
+          <div class="panel-head">
+            <h2>雪球月度帖子目录（可选择导入）</h2>
+            <p id="catalogMeta">未加载</p>
+          </div>
+          <div class="table-wrap short">
+            <table>
+              <thead>
+                <tr>
+                  <th>选择</th>
+                  <th>月份</th>
+                  <th>标题</th>
+                  <th>发布时间</th>
+                  <th>状态</th>
+                  <th>原帖</th>
+                </tr>
+              </thead>
+              <tbody id="catalogBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="panel">
+          <div class="panel-head">
+            <h2>已导入历史快照（可切换查看）</h2>
+            <p id="snapshotHistoryMeta">载入中...</p>
+          </div>
+          <div class="inline-actions top-gap">
+            <button class="btn" type="button" id="viewLatestBtn">查看最新快照</button>
+          </div>
+          <div class="table-wrap short">
+            <table>
+              <thead>
+                <tr>
+                  <th>月份</th>
+                  <th>标题</th>
+                  <th>发布时间</th>
+                  <th>行数</th>
+                  <th>操作</th>
+                </tr>
+              </thead>
+              <tbody id="snapshotHistoryBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+    </main>
+
+    <script src="/auto-sync.js"></script>
+  </body>
+</html>

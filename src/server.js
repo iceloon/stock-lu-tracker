@@ -1,0 +1,1022 @@
+const path = require("node:path");
+const { randomUUID } = require("node:crypto");
+
+const express = require("express");
+
+const { ensureStore, readStore, mutateStore } = require("./store");
+const { buildPortfolio, buildMonthlyStatus, toMonthKey } = require("./portfolio");
+const { refreshQuotes } = require("./quotes");
+const { toApiSymbol, normalizeMarket } = require("./symbols");
+const {
+  ensureAutoTrackingState,
+  mergeAutoTrackingConfig,
+  collectSuperLudinggongSnapshots,
+  collectSuperLudinggongPostCatalog
+} = require("./super-ludinggong-sync");
+
+const app = express();
+const PORT = Number(process.env.PORT) || 8787;
+
+const PROFILE_LINKS = {
+  xueqiu: "https://xueqiu.com/u/8790885129",
+  weibo: "https://weibo.com/u/3962719063"
+};
+
+let autoTrackingRunning = false;
+let autoTrackingTimer = null;
+
+app.use(express.json({ limit: "1mb" }));
+app.use(express.static(path.join(process.cwd(), "public")));
+
+app.get("/auto-sync", (_req, res) => {
+  res.redirect(302, "/admin.html");
+});
+
+function toNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function toDateIso(value) {
+  const date = value ? new Date(value) : new Date();
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date.toISOString();
+}
+
+function isSampleCookie(cookie) {
+  const text = String(cookie || "").trim();
+  if (!text) {
+    return false;
+  }
+  const samples = ["abc123", "xyz987", "_2A25Labcde", "Hm_lvt_test"];
+  return samples.some((item) => text.includes(item));
+}
+
+function createHttpError(status, message) {
+  const error = new Error(message);
+  error.status = status;
+  return error;
+}
+
+function pushSnapshot(store, source = "manual") {
+  const { summary } = buildPortfolio(store.trades, store.quotes);
+
+  const snapshot = {
+    id: randomUUID(),
+    timestamp: new Date().toISOString(),
+    source,
+    totalMarketValue: summary.totalMarketValue,
+    totalCost: summary.totalCost,
+    totalUnrealizedPnl: summary.totalUnrealizedPnl,
+    totalDailyPnl: summary.totalDailyPnl,
+    holdingCount: summary.holdingCount
+  };
+
+  store.snapshots.push(snapshot);
+
+  if (store.snapshots.length > 5000) {
+    store.snapshots = store.snapshots.slice(-5000);
+  }
+
+  return snapshot;
+}
+
+function buildState(store) {
+  const portfolio = buildPortfolio(store.trades, store.quotes);
+  const monthlyStatus = buildMonthlyStatus(store.monthlyUpdates || []);
+  const autoTracking = ensureAutoTrackingState(store);
+
+  return {
+    summary: portfolio.summary,
+    positions: portfolio.positions,
+    monthlyStatus,
+    autoTracking: getAutoTrackingPublic(autoTracking),
+    latestMasterSnapshot: autoTracking.latestSnapshot || null
+  };
+}
+
+function parseTradeInput(payload) {
+  const symbol = String(payload.symbol || "").trim().toUpperCase();
+  if (!symbol) {
+    throw createHttpError(400, "symbol 不能为空");
+  }
+
+  const type = String(payload.type || "BUY").toUpperCase();
+  if (!["BUY", "SELL"].includes(type)) {
+    throw createHttpError(400, "type 只能是 BUY 或 SELL");
+  }
+
+  const quantity = toNumber(payload.quantity);
+  if (!quantity || quantity <= 0) {
+    throw createHttpError(400, "quantity 必须大于 0");
+  }
+
+  const price = toNumber(payload.price);
+  if (!price || price <= 0) {
+    throw createHttpError(400, "price 必须大于 0");
+  }
+
+  const feeRaw = payload.fee === "" || payload.fee === null || typeof payload.fee === "undefined" ? 0 : toNumber(payload.fee);
+  if (feeRaw === null || feeRaw < 0) {
+    throw createHttpError(400, "fee 不能小于 0");
+  }
+
+  const market = normalizeMarket(symbol, payload.market);
+  const apiSymbol = toApiSymbol(symbol, market);
+  if (!apiSymbol) {
+    throw createHttpError(400, "无法识别股票代码");
+  }
+
+  const tradeDate = toDateIso(payload.tradeDate);
+  if (!tradeDate) {
+    throw createHttpError(400, "tradeDate 无效");
+  }
+
+  return {
+    id: randomUUID(),
+    symbol,
+    apiSymbol,
+    market,
+    name: String(payload.name || "").trim(),
+    type,
+    quantity,
+    price,
+    fee: feeRaw,
+    tradeDate,
+    note: String(payload.note || "").trim(),
+    createdAt: new Date().toISOString()
+  };
+}
+
+function normalizeSourceSymbol(rawSymbol) {
+  const value = String(rawSymbol || "").trim().toUpperCase();
+  if (!value || value.includes("CASH")) {
+    return null;
+  }
+
+  if (/^\d{6}\.(SH|SZ)$/.test(value)) {
+    return {
+      symbol: value.slice(0, 6),
+      market: "CN"
+    };
+  }
+
+  if (/^\d{4,5}\.HK$/.test(value)) {
+    return {
+      symbol: value.replace(".HK", ""),
+      market: "HK"
+    };
+  }
+
+  if (/^\d{6}$/.test(value)) {
+    return {
+      symbol: value,
+      market: "CN"
+    };
+  }
+
+  if (/^\d{4,5}$/.test(value)) {
+    return {
+      symbol: value,
+      market: "HK"
+    };
+  }
+
+  if (/^[A-Z]{1,6}(\.[A-Z]{2,3})?$/.test(value)) {
+    return {
+      symbol: value.split(".")[0],
+      market: "US"
+    };
+  }
+
+  return null;
+}
+
+function getAutoTrackingPublic(autoTrackingInput) {
+  const autoTracking = autoTrackingInput || {};
+  const config = mergeAutoTrackingConfig(autoTracking.config || {});
+
+  return {
+    config: {
+      enabled: Boolean(config.enabled),
+      intervalMinutes: config.intervalMinutes,
+      maxPostsPerSource: config.maxPostsPerSource,
+      ocrEnabled: Boolean(config.ocrEnabled),
+      ocrMaxImagesPerPost: config.ocrMaxImagesPerPost,
+      pinnedPostUrls: config.pinnedPostUrls,
+      xueqiuTitleRegex: config.xueqiuTitleRegex,
+      backfillMaxPages: config.backfillMaxPages,
+      backfillPageSize: config.backfillPageSize,
+      keywords: config.keywords,
+      hasXueqiuCookie: Boolean(config.xueqiuCookie) && !isSampleCookie(config.xueqiuCookie),
+      hasWeiboCookie: Boolean(config.weiboCookie) && !isSampleCookie(config.weiboCookie)
+    },
+    runtime: autoTracking.runtime || {},
+    latestSnapshot: autoTracking.latestSnapshot || null,
+    recentLogs: Array.isArray(autoTracking.logs) ? autoTracking.logs.slice(0, 30) : []
+  };
+}
+
+function appendAutoTrackingLogs(autoTracking, logs) {
+  if (!Array.isArray(logs) || logs.length === 0) {
+    return;
+  }
+
+  autoTracking.logs = [...logs, ...(autoTracking.logs || [])].slice(0, 200);
+}
+
+async function scheduleAutoTracking() {
+  if (autoTrackingTimer) {
+    clearInterval(autoTrackingTimer);
+    autoTrackingTimer = null;
+  }
+
+  const store = await readStore();
+  const autoTracking = ensureAutoTrackingState(store);
+  const config = mergeAutoTrackingConfig(autoTracking.config);
+
+  if (!config.enabled) {
+    await mutateStore((draft) => {
+      const state = ensureAutoTrackingState(draft);
+      state.runtime.nextRunAt = null;
+    });
+    return;
+  }
+
+  const intervalMs = config.intervalMinutes * 60 * 1000;
+  autoTrackingTimer = setInterval(() => {
+    runAutoTrackingJob("timer").catch((error) => {
+      console.error("Auto tracking timer error:", error.message);
+    });
+  }, intervalMs);
+
+  await mutateStore((draft) => {
+    const state = ensureAutoTrackingState(draft);
+    state.runtime.nextRunAt = new Date(Date.now() + intervalMs).toISOString();
+  });
+}
+
+async function runAutoTrackingJob(trigger = "manual", collectOptions = {}) {
+  if (autoTrackingRunning) {
+    return {
+      ok: false,
+      skipped: true,
+      reason: "任务正在执行中"
+    };
+  }
+
+  autoTrackingRunning = true;
+  const startedAt = new Date().toISOString();
+
+  try {
+    const before = await readStore();
+    const autoTrackingBefore = ensureAutoTrackingState(before);
+    const config = mergeAutoTrackingConfig(autoTrackingBefore.config);
+
+    if (!config.enabled && trigger === "timer") {
+      return {
+        ok: true,
+        skipped: true,
+        reason: "自动同步已关闭"
+      };
+    }
+
+    const syncResult = await collectSuperLudinggongSnapshots(
+      config,
+      autoTrackingBefore.processedPostIds || [],
+      collectOptions
+    );
+
+    let importedSnapshots = 0;
+    let importedTrades = 0;
+    let skippedSnapshots = 0;
+
+    await mutateStore((draft) => {
+      const autoTracking = ensureAutoTrackingState(draft);
+      const processedPostIds = new Set(autoTracking.processedPostIds || []);
+      const importedTradeKeys = new Set(autoTracking.importedTradeKeys || []);
+
+      appendAutoTrackingLogs(autoTracking, syncResult.logs);
+
+      for (const snapshot of syncResult.snapshots) {
+        if (processedPostIds.has(snapshot.postId)) {
+          skippedSnapshots += 1;
+          continue;
+        }
+
+        let importedTradesInSnapshot = 0;
+
+        for (const row of snapshot.rows) {
+          if (!["BUY", "SELL"].includes(row.action)) {
+            continue;
+          }
+
+          const normalized = normalizeSourceSymbol(row.symbol);
+          if (!normalized) {
+            continue;
+          }
+
+          const rawQty = Math.abs(Number(row.changeQty) || 0);
+          const rawPrice = Math.abs(Number(row.latestCost) || 0);
+
+          if (rawQty <= 0 || rawPrice <= 0) {
+            continue;
+          }
+
+          let quantity = rawQty;
+          const apiSymbol = toApiSymbol(normalized.symbol, normalized.market);
+          const dedupeKey = `${snapshot.postId}|${apiSymbol}|${row.action}|${rawQty}|${rawPrice}`;
+          if (importedTradeKeys.has(dedupeKey)) {
+            continue;
+          }
+
+          if (row.action === "SELL") {
+            const portfolioNow = buildPortfolio(draft.trades, draft.quotes);
+            const positionNow = portfolioNow.positions.find((item) => item.apiSymbol === apiSymbol);
+            const available = Number(positionNow?.quantity) || 0;
+            if (available <= 0) {
+              continue;
+            }
+            quantity = Math.min(quantity, available);
+          }
+
+          if (quantity <= 0) {
+            continue;
+          }
+
+          const trade = parseTradeInput({
+            symbol: normalized.symbol,
+            market: normalized.market,
+            type: row.action,
+            quantity,
+            price: rawPrice,
+            fee: 0,
+            tradeDate: snapshot.postedAt,
+            name: row.name || "",
+            note: `auto_sync:${snapshot.source}:${snapshot.postId}:${row.actionLabel || row.action}`
+          });
+
+          draft.trades.push(trade);
+          importedTradeKeys.add(dedupeKey);
+          importedTrades += 1;
+          importedTradesInSnapshot += 1;
+        }
+
+        const month = toMonthKey(snapshot.postedAt);
+        const monthKey = `${snapshot.source}:${snapshot.postId}`;
+        const hasMonthUpdate = draft.monthlyUpdates.some((item) => item.id === monthKey);
+
+        if (!hasMonthUpdate) {
+          draft.monthlyUpdates.push({
+            id: monthKey,
+            month,
+            source: snapshot.source,
+            postedAt: snapshot.postedAt,
+            note: `自动抓取: ${snapshot.rows.length} 行`,
+            createdAt: new Date().toISOString()
+          });
+        }
+
+        const latestSnapshotRecord = {
+          id: randomUUID(),
+          postId: snapshot.postId,
+          source: snapshot.source,
+          postedAt: snapshot.postedAt,
+          link: snapshot.link,
+          title: snapshot.title || "",
+          rows: snapshot.rows,
+          rawText: snapshot.rawText,
+          ocrText: snapshot.ocrText,
+          images: snapshot.images,
+          importedTrades: importedTradesInSnapshot,
+          createdAt: new Date().toISOString()
+        };
+
+        draft.masterSnapshots = [latestSnapshotRecord, ...(draft.masterSnapshots || [])].slice(0, 200);
+        autoTracking.latestSnapshot = latestSnapshotRecord;
+
+        processedPostIds.add(snapshot.postId);
+        importedSnapshots += 1;
+      }
+
+      autoTracking.processedPostIds = [...processedPostIds].slice(-1500);
+      autoTracking.importedTradeKeys = [...importedTradeKeys].slice(-6000);
+
+      draft.masterSnapshots = sortByRecentDate(draft.masterSnapshots || [], "postedAt").slice(0, 200);
+      autoTracking.latestSnapshot = draft.masterSnapshots[0] || null;
+
+      autoTracking.runtime.lastRunAt = startedAt;
+      autoTracking.runtime.lastError = null;
+      autoTracking.runtime.lastSuccessAt = new Date().toISOString();
+      autoTracking.runtime.totalImportedSnapshots =
+        (Number(autoTracking.runtime.totalImportedSnapshots) || 0) + importedSnapshots;
+      autoTracking.runtime.totalImportedTrades =
+        (Number(autoTracking.runtime.totalImportedTrades) || 0) + importedTrades;
+
+      const intervalMs = mergeAutoTrackingConfig(autoTracking.config).intervalMinutes * 60 * 1000;
+      autoTracking.runtime.nextRunAt = autoTracking.config.enabled
+        ? new Date(Date.now() + intervalMs).toISOString()
+        : null;
+    });
+
+    return {
+      ok: true,
+      mode: collectOptions.mode || "normal",
+      importedSnapshots,
+      importedTrades,
+      skippedSnapshots,
+      logs: syncResult.logs
+    };
+  } catch (error) {
+    await mutateStore((draft) => {
+      const autoTracking = ensureAutoTrackingState(draft);
+      autoTracking.runtime.lastRunAt = startedAt;
+      autoTracking.runtime.lastError = error.message;
+      appendAutoTrackingLogs(autoTracking, [
+        {
+          id: `${Date.now()}-fatal`,
+          createdAt: new Date().toISOString(),
+          level: "error",
+          message: `自动同步失败: ${error.message}`
+        }
+      ]);
+    });
+
+    return {
+      ok: false,
+      error: error.message
+    };
+  } finally {
+    autoTrackingRunning = false;
+  }
+}
+
+function sortByRecentDate(items, dateField = "createdAt") {
+  return [...items].sort((a, b) => {
+    const aTime = new Date(a[dateField] || a.createdAt || 0).getTime();
+    const bTime = new Date(b[dateField] || b.createdAt || 0).getTime();
+    return bTime - aTime;
+  });
+}
+
+function normalizePostIds(input) {
+  if (!Array.isArray(input)) {
+    return [];
+  }
+
+  const ids = input
+    .map((item) => String(item || "").trim())
+    .filter((item) => /^xq:\d{6,}$/i.test(item) || /^wb:[A-Za-z0-9]{6,}$/i.test(item));
+
+  return [...new Set(ids)];
+}
+
+app.get("/api/health", (_req, res) => {
+  res.json({
+    ok: true,
+    now: new Date().toISOString()
+  });
+});
+
+app.get("/api/state", async (_req, res, next) => {
+  try {
+    const store = await readStore();
+    res.json(buildState(store));
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/trades", async (_req, res, next) => {
+  try {
+    const store = await readStore();
+    const trades = sortByRecentDate(store.trades, "tradeDate");
+    res.json({ trades });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/trades", async (req, res, next) => {
+  try {
+    const trade = parseTradeInput(req.body || {});
+
+    await mutateStore((store) => {
+      if (trade.type === "SELL") {
+        const { positions } = buildPortfolio(store.trades, store.quotes);
+        const current = positions.find((item) => item.apiSymbol === trade.apiSymbol);
+        const available = current?.quantity || 0;
+
+        if (trade.quantity > available) {
+          throw createHttpError(
+            400,
+            `卖出数量超过当前持仓：可卖 ${available}，请求卖出 ${trade.quantity}`
+          );
+        }
+      }
+
+      store.trades.push(trade);
+    });
+
+    const store = await readStore();
+
+    res.status(201).json({
+      trade,
+      state: buildState(store)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/trades/:id", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    let removed = false;
+    await mutateStore((store) => {
+      const before = store.trades.length;
+      store.trades = store.trades.filter((item) => item.id !== id);
+      removed = before !== store.trades.length;
+    });
+
+    if (!removed) {
+      throw createHttpError(404, "未找到对应 trade id");
+    }
+
+    const store = await readStore();
+
+    res.json({
+      ok: true,
+      state: buildState(store)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/quotes/refresh", async (_req, res, next) => {
+  try {
+    const beforeStore = await readStore();
+    const { positions } = buildPortfolio(beforeStore.trades, beforeStore.quotes);
+    const symbols = positions.map((item) => item.apiSymbol);
+
+    if (symbols.length === 0) {
+      throw createHttpError(400, "没有可刷新行情的持仓");
+    }
+
+    const refreshResult = await refreshQuotes(symbols);
+
+    await mutateStore((store) => {
+      for (const [apiSymbol, quote] of Object.entries(refreshResult.quotesBySymbol)) {
+        store.quotes[apiSymbol] = quote;
+      }
+      pushSnapshot(store, "quote_refresh");
+    });
+
+    const store = await readStore();
+
+    res.json({
+      refresh: refreshResult,
+      state: buildState(store)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/quotes/manual", async (req, res, next) => {
+  try {
+    const symbolRaw = String(req.body.symbol || "").trim().toUpperCase();
+    const market = normalizeMarket(symbolRaw, req.body.market);
+    const apiSymbol = toApiSymbol(symbolRaw, market);
+
+    if (!apiSymbol) {
+      throw createHttpError(400, "symbol 无效");
+    }
+
+    const price = toNumber(req.body.price);
+    if (!price || price <= 0) {
+      throw createHttpError(400, "price 必须大于 0");
+    }
+
+    const previousCloseRaw = req.body.previousClose;
+    const previousCloseParsed =
+      previousCloseRaw === "" || previousCloseRaw === null || typeof previousCloseRaw === "undefined"
+        ? null
+        : toNumber(previousCloseRaw);
+
+    if (previousCloseParsed !== null && previousCloseParsed <= 0) {
+      throw createHttpError(400, "previousClose 必须大于 0");
+    }
+
+    await mutateStore((store) => {
+      store.quotes[apiSymbol] = {
+        apiSymbol,
+        lastPrice: price,
+        previousClose: previousCloseParsed ?? price,
+        currency: String(req.body.currency || "").trim().toUpperCase() || "",
+        exchange: "",
+        shortName: "",
+        asOf: new Date().toISOString(),
+        source: "manual"
+      };
+
+      pushSnapshot(store, "manual_quote");
+    });
+
+    const store = await readStore();
+
+    res.json({
+      ok: true,
+      state: buildState(store)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/snapshots", async (req, res, next) => {
+  try {
+    const days = Math.max(1, Math.min(3650, Number(req.query.days) || 180));
+    const since = Date.now() - days * 24 * 60 * 60 * 1000;
+
+    const store = await readStore();
+    const snapshots = store.snapshots
+      .filter((item) => new Date(item.timestamp).getTime() >= since)
+      .sort((a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime());
+
+    res.json({ snapshots });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/snapshots", async (req, res, next) => {
+  try {
+    let snapshot;
+
+    await mutateStore((store) => {
+      const sourceRaw = String(req.body.source || "manual").trim().toLowerCase();
+      const source = sourceRaw || "manual";
+      snapshot = pushSnapshot(store, source);
+    });
+
+    res.status(201).json({ snapshot });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/monthly-updates", async (_req, res, next) => {
+  try {
+    const store = await readStore();
+    const updates = sortByRecentDate(store.monthlyUpdates || [], "postedAt");
+    const monthlyStatus = buildMonthlyStatus(store.monthlyUpdates || []);
+
+    res.json({
+      updates,
+      monthlyStatus,
+      links: PROFILE_LINKS
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/monthly-updates", async (req, res, next) => {
+  try {
+    const source = String(req.body.source || "both").trim().toLowerCase();
+    if (!["xueqiu", "weibo", "both", "other"].includes(source)) {
+      throw createHttpError(400, "source 只能是 xueqiu / weibo / both / other");
+    }
+
+    const postedAt = toDateIso(req.body.postedAt);
+    if (!postedAt) {
+      throw createHttpError(400, "postedAt 无效");
+    }
+
+    const month = String(req.body.month || toMonthKey(postedAt)).trim();
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      throw createHttpError(400, "month 格式必须为 YYYY-MM");
+    }
+
+    const note = String(req.body.note || "").trim();
+
+    const update = {
+      id: randomUUID(),
+      month,
+      source,
+      postedAt,
+      note,
+      createdAt: new Date().toISOString()
+    };
+
+    await mutateStore((store) => {
+      store.monthlyUpdates.push(update);
+      if (store.monthlyUpdates.length > 240) {
+        store.monthlyUpdates = store.monthlyUpdates.slice(-240);
+      }
+    });
+
+    const store = await readStore();
+
+    res.status(201).json({
+      update,
+      monthlyStatus: buildMonthlyStatus(store.monthlyUpdates || [])
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.delete("/api/monthly-updates/:id", async (req, res, next) => {
+  try {
+    const { id } = req.params;
+
+    let removed = false;
+    await mutateStore((store) => {
+      const before = store.monthlyUpdates.length;
+      store.monthlyUpdates = store.monthlyUpdates.filter((item) => item.id !== id);
+      removed = before !== store.monthlyUpdates.length;
+    });
+
+    if (!removed) {
+      throw createHttpError(404, "未找到对应 month update id");
+    }
+
+    const store = await readStore();
+
+    res.json({
+      ok: true,
+      monthlyStatus: buildMonthlyStatus(store.monthlyUpdates || [])
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/auto-tracking", async (_req, res, next) => {
+  try {
+    const store = await readStore();
+    const autoTracking = ensureAutoTrackingState(store);
+    const latestSnapshot = autoTracking.latestSnapshot || store.masterSnapshots?.[0] || null;
+
+    res.json({
+      autoTracking: getAutoTrackingPublic(autoTracking),
+      latestSnapshot
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auto-tracking/config", async (req, res, next) => {
+  try {
+    const payload = req.body || {};
+
+    await mutateStore((store) => {
+      const autoTracking = ensureAutoTrackingState(store);
+
+      const patch = {
+        ...autoTracking.config
+      };
+
+      if (typeof payload.enabled !== "undefined") {
+        patch.enabled = Boolean(payload.enabled);
+      }
+
+      if (typeof payload.intervalMinutes !== "undefined") {
+        patch.intervalMinutes = Number(payload.intervalMinutes);
+      }
+
+      if (typeof payload.maxPostsPerSource !== "undefined") {
+        patch.maxPostsPerSource = Number(payload.maxPostsPerSource);
+      }
+
+      if (typeof payload.ocrEnabled !== "undefined") {
+        patch.ocrEnabled = Boolean(payload.ocrEnabled);
+      }
+
+      if (typeof payload.ocrMaxImagesPerPost !== "undefined") {
+        patch.ocrMaxImagesPerPost = Number(payload.ocrMaxImagesPerPost);
+      }
+
+      if (typeof payload.keywords !== "undefined") {
+        patch.keywords = Array.isArray(payload.keywords)
+          ? payload.keywords
+          : String(payload.keywords || "")
+              .split(/[,\n]/)
+              .map((item) => item.trim())
+              .filter(Boolean);
+      }
+
+      if (typeof payload.pinnedPostUrls !== "undefined") {
+        patch.pinnedPostUrls = Array.isArray(payload.pinnedPostUrls)
+          ? payload.pinnedPostUrls
+          : String(payload.pinnedPostUrls || "")
+              .split(/[\n,]/)
+              .map((item) => item.trim())
+              .filter(Boolean);
+      }
+
+      if (typeof payload.xueqiuTitleRegex !== "undefined") {
+        patch.xueqiuTitleRegex = String(payload.xueqiuTitleRegex || "").trim();
+      }
+
+      if (typeof payload.backfillMaxPages !== "undefined") {
+        patch.backfillMaxPages = Number(payload.backfillMaxPages);
+      }
+
+      if (typeof payload.backfillPageSize !== "undefined") {
+        patch.backfillPageSize = Number(payload.backfillPageSize);
+      }
+
+      if (typeof payload.xueqiuCookie === "string") {
+        patch.xueqiuCookie = payload.xueqiuCookie.trim();
+      }
+
+      if (typeof payload.weiboCookie === "string") {
+        patch.weiboCookie = payload.weiboCookie.trim();
+      }
+
+      autoTracking.config = mergeAutoTrackingConfig(patch);
+    });
+
+    await scheduleAutoTracking();
+
+    const store = await readStore();
+    const autoTracking = ensureAutoTrackingState(store);
+
+    res.json({
+      ok: true,
+      autoTracking: getAutoTrackingPublic(autoTracking)
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auto-tracking/run", async (_req, res, next) => {
+  try {
+    const result = await runAutoTrackingJob("manual");
+    const store = await readStore();
+    const autoTracking = ensureAutoTrackingState(store);
+
+    res.json({
+      result,
+      autoTracking: getAutoTrackingPublic(autoTracking),
+      latestSnapshot: autoTracking.latestSnapshot || store.masterSnapshots?.[0] || null
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auto-tracking/backfill", async (req, res, next) => {
+  try {
+    const pagesRaw = req.body?.pages;
+    const pageSizeRaw = req.body?.pageSize;
+    const pages =
+      typeof pagesRaw === "undefined" || pagesRaw === null || pagesRaw === ""
+        ? undefined
+        : Number(pagesRaw);
+    const pageSize =
+      typeof pageSizeRaw === "undefined" || pageSizeRaw === null || pageSizeRaw === ""
+        ? undefined
+        : Number(pageSizeRaw);
+
+    const result = await runAutoTrackingJob("backfill", {
+      mode: "backfill",
+      backfillPages: pages,
+      backfillPageSize: pageSize
+    });
+
+    const store = await readStore();
+    const autoTracking = ensureAutoTrackingState(store);
+
+    res.json({
+      result,
+      autoTracking: getAutoTrackingPublic(autoTracking),
+      latestSnapshot: autoTracking.latestSnapshot || store.masterSnapshots?.[0] || null
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auto-tracking/catalog", async (req, res, next) => {
+  try {
+    const pagesRaw = req.body?.pages;
+    const pageSizeRaw = req.body?.pageSize;
+    const pages =
+      typeof pagesRaw === "undefined" || pagesRaw === null || pagesRaw === ""
+        ? undefined
+        : Number(pagesRaw);
+    const pageSize =
+      typeof pageSizeRaw === "undefined" || pageSizeRaw === null || pageSizeRaw === ""
+        ? undefined
+        : Number(pageSizeRaw);
+
+    const store = await readStore();
+    const autoTracking = ensureAutoTrackingState(store);
+    const config = mergeAutoTrackingConfig(autoTracking.config);
+
+    const catalog = await collectSuperLudinggongPostCatalog(config, {
+      backfillPages: pages,
+      backfillPageSize: pageSize
+    });
+
+    const importedPostIds = new Set((store.masterSnapshots || []).map((item) => item.postId));
+    const processedPostIds = new Set(autoTracking.processedPostIds || []);
+
+    const posts = catalog.posts.map((item) => ({
+      ...item,
+      imported: importedPostIds.has(item.postId),
+      processed: processedPostIds.has(item.postId)
+    }));
+
+    res.json({
+      posts,
+      logs: catalog.logs
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/auto-tracking/import-selected", async (req, res, next) => {
+  try {
+    const postIds = normalizePostIds(req.body?.postIds);
+    if (postIds.length === 0) {
+      throw createHttpError(400, "postIds 不能为空");
+    }
+
+    const pagesRaw = req.body?.pages;
+    const pageSizeRaw = req.body?.pageSize;
+    const pages =
+      typeof pagesRaw === "undefined" || pagesRaw === null || pagesRaw === ""
+        ? undefined
+        : Number(pagesRaw);
+    const pageSize =
+      typeof pageSizeRaw === "undefined" || pageSizeRaw === null || pageSizeRaw === ""
+        ? undefined
+        : Number(pageSizeRaw);
+
+    const result = await runAutoTrackingJob("import_selected", {
+      mode: "backfill",
+      targetPostIds: postIds,
+      backfillPages: pages,
+      backfillPageSize: pageSize
+    });
+
+    const store = await readStore();
+    const autoTracking = ensureAutoTrackingState(store);
+
+    res.json({
+      result,
+      selectedCount: postIds.length,
+      autoTracking: getAutoTrackingPublic(autoTracking),
+      latestSnapshot: autoTracking.latestSnapshot || store.masterSnapshots?.[0] || null
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.get("/api/master-snapshots", async (req, res, next) => {
+  try {
+    const limit = Math.max(1, Math.min(240, Number(req.query.limit) || 10));
+    const store = await readStore();
+    const snapshots = (store.masterSnapshots || []).slice(0, limit);
+
+    res.json({ snapshots });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.use((error, _req, res, _next) => {
+  const status = error.status || 500;
+  res.status(status).json({
+    error: error.message || "服务器异常"
+  });
+});
+
+ensureStore()
+  .then(async () => {
+    await scheduleAutoTracking();
+    runAutoTrackingJob("startup").catch((error) => {
+      console.error("Auto tracking startup error:", error.message);
+    });
+
+    app.listen(PORT, () => {
+      console.log(`Stock tracker running at http://localhost:${PORT}`);
+    });
+  })
+  .catch((error) => {
+    console.error("Failed to start server:", error);
+    process.exit(1);
+  });

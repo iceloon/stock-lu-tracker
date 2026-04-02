@@ -1,0 +1,16 @@
+services:
+  stock-lu:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: icekale/stock-lu-tracker:latest
+    container_name: stock-lu
+    ports:
+      - "8787:8787"
+    environment:
+      NODE_ENV: production
+      PORT: 8787
+      TESSDATA_PREFIX: /app
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped

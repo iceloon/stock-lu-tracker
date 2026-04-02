@@ -1,0 +1,176 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>持仓跟踪台</title>
+    <link rel="stylesheet" href="/replica.css" />
+  </head>
+  <body class="replica-body">
+    <nav class="apple-nav">
+      <div class="apple-nav-inner">
+        <p class="nav-brand">Portfolio OS</p>
+        <div class="nav-links">
+          <p class="nav-subtitle">主页看板</p>
+          <a class="nav-link-btn" href="/admin.html">后台配置</a>
+        </div>
+      </div>
+    </nav>
+
+    <main class="replica-wrap">
+      <section class="replica-card">
+        <header class="replica-top">
+          <div class="replica-tabs" role="tablist" aria-label="持仓视图">
+            <button
+              id="tabLatestBtn"
+              type="button"
+              class="replica-tab-btn"
+              role="tab"
+              aria-selected="false"
+              aria-controls="latestView"
+              tabindex="-1"
+            >
+              <span class="tab-icon">🧳</span>
+              最新持仓
+            </button>
+            <button
+              id="tabAdjustBtn"
+              type="button"
+              class="replica-tab-btn active"
+              role="tab"
+              aria-selected="true"
+              aria-controls="adjustView"
+              tabindex="0"
+            >
+              <span class="tab-icon">⇄</span>
+              调仓记录
+            </button>
+          </div>
+
+          <label class="month-switch" for="snapshotSelect">
+            月份
+            <select id="snapshotSelect"></select>
+          </label>
+        </header>
+
+        <section class="overview-strip" aria-label="总览统计">
+          <div class="overview-item">
+            <p class="overview-label">总市值</p>
+            <p class="overview-value" id="totalMarketValue">-</p>
+          </div>
+          <div class="overview-item">
+            <p class="overview-label">环比变化</p>
+            <p class="overview-value" id="marketValueMoM">-</p>
+          </div>
+          <div class="overview-item">
+            <p class="overview-label">净值指数</p>
+            <p class="overview-value" id="netIndexValue">-</p>
+          </div>
+          <div class="overview-item">
+            <p class="overview-label">年初净值指数</p>
+            <p class="overview-value" id="yearStartIndexValue">-</p>
+          </div>
+          <div class="overview-item">
+            <p class="overview-label">持仓数量</p>
+            <p class="overview-value" id="holdingCount">-</p>
+          </div>
+        </section>
+
+        <section
+          id="adjustView"
+          class="replica-view"
+          role="tabpanel"
+          aria-labelledby="tabAdjustBtn"
+          aria-hidden="false"
+        >
+          <div class="table-wrap replica-table-wrap">
+            <table class="replica-table adjust-table">
+              <thead>
+                <tr>
+                  <th>代码</th>
+                  <th>股票名称</th>
+                  <th>操作记录</th>
+                  <th>变动股数</th>
+                  <th>最新成本</th>
+                </tr>
+              </thead>
+              <tbody id="adjustRowsBody"></tbody>
+            </table>
+          </div>
+
+          <section class="replica-subsection">
+            <h3 class="sub-title open">新开仓</h3>
+            <div class="table-wrap replica-table-wrap">
+              <table class="replica-table open-table">
+                <thead>
+                  <tr>
+                    <th>代码</th>
+                    <th>股票名称</th>
+                    <th>开仓股数</th>
+                    <th>历史持仓</th>
+                  </tr>
+                </thead>
+                <tbody id="openRowsBody"></tbody>
+              </table>
+            </div>
+          </section>
+
+          <section class="replica-subsection">
+            <h3 class="sub-title close">已清仓</h3>
+            <div class="table-wrap replica-table-wrap">
+              <table class="replica-table close-table">
+                <thead>
+                  <tr>
+                    <th>代码</th>
+                    <th>股票名称</th>
+                    <th>清仓股数</th>
+                    <th>历史持仓</th>
+                  </tr>
+                </thead>
+                <tbody id="closeRowsBody"></tbody>
+              </table>
+            </div>
+          </section>
+        </section>
+
+        <section
+          id="latestView"
+          class="replica-view hidden"
+          role="tabpanel"
+          aria-labelledby="tabLatestBtn"
+          hidden
+          aria-hidden="true"
+        >
+          <div class="table-wrap replica-table-wrap">
+            <table class="replica-table latest-table">
+              <thead>
+                <tr>
+                  <th>代码</th>
+                  <th>股票名称</th>
+                  <th>持仓股数</th>
+                  <th>最新成本</th>
+                  <th>最新市值</th>
+                </tr>
+              </thead>
+              <tbody id="latestRowsBody"></tbody>
+            </table>
+          </div>
+        </section>
+      </section>
+
+      <section class="replica-card networth-card">
+        <header class="networth-head">
+          <h3>月度净值曲线</h3>
+          <p>优先使用帖子中的累积净值，其次回退到持仓市值</p>
+        </header>
+        <div class="networth-canvas-wrap">
+          <p id="monthlyChartEmpty" class="chart-empty hidden">暂无可绘制的月度净值数据</p>
+          <canvas id="monthlyNetworthChart"></canvas>
+        </div>
+      </section>
+    </main>
+
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <script src="/app.js"></script>
+  </body>
+</html>

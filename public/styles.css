@@ -1,0 +1,3 @@
+/* Legacy compatibility bundle. Prefer using /admin.css or /replica.css directly. */
+@import url("/admin.css");
+@import url("/replica.css");
