@@ -21,6 +21,9 @@ const ADMIN_AUTH_ENABLED = ADMIN_PASSWORD.length > 0;
 const ADMIN_SESSION_COOKIE = "stock_lu_admin";
 const ADMIN_SESSION_TTL_HOURS = Math.max(1, Number(process.env.ADMIN_SESSION_TTL_HOURS) || 24);
 const ADMIN_SESSION_TTL_MS = ADMIN_SESSION_TTL_HOURS * 60 * 60 * 1000;
+const ADMIN_COOKIE_SECURE = ["1", "true", "yes", "on"].includes(
+  String(process.env.ADMIN_COOKIE_SECURE || "").trim().toLowerCase()
+);
 const ADMIN_SESSION_SECRET = createHash("sha256")
   .update(`stock-lu-admin:${ADMIN_PASSWORD}:${process.pid}:${Date.now()}`)
   .digest("hex");
@@ -158,9 +161,13 @@ function verifyAdminSessionToken(token) {
   return true;
 }
 
+function buildCookieSecureAttr() {
+  return ADMIN_COOKIE_SECURE ? "; Secure" : "";
+}
+
 function setAdminSessionCookie(res, token) {
   const maxAge = Math.max(60, Math.floor(ADMIN_SESSION_TTL_MS / 1000));
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  const secure = buildCookieSecureAttr();
   const value = encodeURIComponent(String(token || ""));
   res.setHeader(
     "Set-Cookie",
@@ -169,7 +176,7 @@ function setAdminSessionCookie(res, token) {
 }
 
 function clearAdminSessionCookie(res) {
-  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  const secure = buildCookieSecureAttr();
   res.setHeader(
     "Set-Cookie",
     `${ADMIN_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure}`

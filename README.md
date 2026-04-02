@@ -33,6 +33,7 @@ npm start
 
 - 设置环境变量 `ADMIN_PASSWORD` 后，后台配置页和自动抓取相关接口会启用密码验证
 - 登录入口：`http://localhost:8787/admin-login.html`
+- 若通过 `http` 访问（如多数 Unraid 局域网场景），请保持 `ADMIN_COOKIE_SECURE=false`
 
 ## 3. 首次配置（必须）
 
@@ -80,6 +81,7 @@ docker run -d \
   -e NODE_ENV=production \
   -e PORT=8787 \
   -e ADMIN_PASSWORD='请改成你的后台密码' \
+  -e ADMIN_COOKIE_SECURE=false \
   -e TESSDATA_PREFIX=/app \
   icekale/stock-lu-tracker:latest
 ```
@@ -99,13 +101,14 @@ docker compose up -d
 
 ```yaml
 ADMIN_PASSWORD: "请改成你的后台密码"
+ADMIN_COOKIE_SECURE: "false"
 ```
 
 ### 6.3 本地构建并运行
 
 ```bash
 docker build -t icekale/stock-lu-tracker:latest .
-docker run -d --name stock-lu -p 8787:8787 -v $(pwd)/data:/app/data -e ADMIN_PASSWORD='请改成你的后台密码' icekale/stock-lu-tracker:latest
+docker run -d --name stock-lu -p 8787:8787 -v $(pwd)/data:/app/data -e ADMIN_PASSWORD='请改成你的后台密码' -e ADMIN_COOKIE_SECURE=false icekale/stock-lu-tracker:latest
 ```
 
 ### 6.4 Unraid（docker compose，bridge + 默认权限）
@@ -126,6 +129,7 @@ services:
       PORT: 8787
       TESSDATA_PREFIX: /app
       ADMIN_PASSWORD: "请改成你的后台密码"
+      ADMIN_COOKIE_SECURE: "false"
     user: "99:100"
     volumes:
       - /mnt/user/appdata/stock-lu/data:/app/data
@@ -138,6 +142,7 @@ services:
 - 若你已在 Unraid 模板里统一处理权限，也可以去掉 `user` 字段
 - 首次部署后后台地址：`http://<你的UnraidIP>:8787/admin.html`
 - 也可直接使用仓库内示例文件：`docker-compose.unraid.yml`
+- 如果你通过反向代理 `https` 访问后台，可将 `ADMIN_COOKIE_SECURE` 改为 `true`
 
 ## 7. 自动发布 Docker（GitHub Actions）
 

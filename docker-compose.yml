@@ -12,6 +12,7 @@ services:
       PORT: 8787
       TESSDATA_PREFIX: /app
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+      ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-false}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

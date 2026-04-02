@@ -11,6 +11,7 @@ services:
       PORT: 8787
       TESSDATA_PREFIX: /app
       ADMIN_PASSWORD: "请改成你的后台密码"
+      ADMIN_COOKIE_SECURE: "false"
     user: "99:100"
     volumes:
       - /mnt/user/appdata/stock-lu/data:/app/data
