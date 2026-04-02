@@ -104,6 +104,13 @@ ADMIN_PASSWORD: "请改成你的后台密码"
 ADMIN_COOKIE_SECURE: "false"
 ```
 
+可选性能参数（默认可不填）：
+
+```yaml
+OCR_CACHE_MAX_ITEMS: "1200"
+OCR_CACHE_TTL_MINUTES: "1440"
+```
+
 ### 6.3 本地构建并运行
 
 ```bash

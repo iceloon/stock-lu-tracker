@@ -46,6 +46,10 @@ const DEFAULT_AUTO_TRACKING = {
 
 let ocrWorkerPromise;
 const execFileAsync = promisify(execFile);
+const OCR_CACHE_MAX_ITEMS = clampNumber(process.env.OCR_CACHE_MAX_ITEMS, 1200, 100, 10000);
+const OCR_CACHE_TTL_MINUTES = clampNumber(process.env.OCR_CACHE_TTL_MINUTES, 24 * 60, 10, 14 * 24 * 60);
+const OCR_CACHE_TTL_MS = OCR_CACHE_TTL_MINUTES * 60 * 1000;
+const ocrTextCache = new Map();
 
 function toDateIso(value) {
   if (!value && value !== 0) {
@@ -1312,6 +1316,99 @@ function dedupePostsById(posts) {
   return deduped;
 }
 
+function buildOcrCacheKey(imageUrl, post) {
+  const source = String(post?.source || "unknown").trim().toLowerCase();
+  const url = String(imageUrl || "").trim();
+  return `${source}|${url}`;
+}
+
+function pruneOcrTextCache(now = Date.now()) {
+  for (const [key, entry] of ocrTextCache.entries()) {
+    const createdAt = Number(entry?.createdAt) || 0;
+    if (!createdAt || now - createdAt > OCR_CACHE_TTL_MS) {
+      ocrTextCache.delete(key);
+    }
+  }
+
+  if (ocrTextCache.size <= OCR_CACHE_MAX_ITEMS) {
+    return;
+  }
+
+  const sorted = [...ocrTextCache.entries()].sort((a, b) => {
+    const aUsed = Number(a[1]?.usedAt) || 0;
+    const bUsed = Number(b[1]?.usedAt) || 0;
+    return aUsed - bUsed;
+  });
+
+  const removeCount = ocrTextCache.size - OCR_CACHE_MAX_ITEMS;
+  for (let i = 0; i < removeCount; i += 1) {
+    const key = sorted[i]?.[0];
+    if (key) {
+      ocrTextCache.delete(key);
+    }
+  }
+}
+
+function getCachedOcrText(cacheKey) {
+  if (!cacheKey) {
+    return null;
+  }
+
+  const entry = ocrTextCache.get(cacheKey);
+  if (!entry) {
+    return null;
+  }
+
+  const now = Date.now();
+  const createdAt = Number(entry.createdAt) || 0;
+  if (!createdAt || now - createdAt > OCR_CACHE_TTL_MS) {
+    ocrTextCache.delete(cacheKey);
+    return null;
+  }
+
+  entry.usedAt = now;
+  return String(entry.text || "");
+}
+
+function setCachedOcrText(cacheKey, text) {
+  const normalizedText = String(text || "");
+  if (!cacheKey || !normalizedText.trim()) {
+    return;
+  }
+
+  const now = Date.now();
+  ocrTextCache.set(cacheKey, {
+    text: normalizedText,
+    createdAt: now,
+    usedAt: now
+  });
+  pruneOcrTextCache(now);
+}
+
+async function mapWithConcurrency(list, concurrency, worker) {
+  const items = Array.isArray(list) ? list : [];
+  const maxConcurrency = clampNumber(concurrency, 1, 1, 12);
+  const results = new Array(items.length);
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (true) {
+      const index = nextIndex;
+      if (index >= items.length) {
+        return;
+      }
+      nextIndex += 1;
+      results[index] = await worker(items[index], index);
+    }
+  }
+
+  await Promise.all(
+    Array.from({ length: Math.min(maxConcurrency, items.length) }, () => runWorker())
+  );
+
+  return results;
+}
+
 async function getOcrWorker() {
   if (!ocrWorkerPromise) {
     ocrWorkerPromise = createWorker("chi_sim+eng", 1, {
@@ -1410,6 +1507,12 @@ async function downloadImageToTempFile(imageUrl, post, config) {
 }
 
 async function extractTextWithOcr(imageUrl, post, config) {
+  const cacheKey = buildOcrCacheKey(imageUrl, post);
+  const cached = getCachedOcrText(cacheKey);
+  if (cached) {
+    return cached;
+  }
+
   const localPath = await downloadImageToTempFile(imageUrl, post, config);
   const scaledPath = path.join(
     os.tmpdir(),
@@ -1421,17 +1524,23 @@ async function extractTextWithOcr(imageUrl, post, config) {
     const texts = [];
 
     const baseResult = await worker.recognize(localPath);
-    texts.push(String(baseResult?.data?.text || ""));
+    const baseText = String(baseResult?.data?.text || "");
+    texts.push(baseText);
+    const baseRows = extractRowsFromText(baseText);
 
-    try {
-      await execFileAsync("sips", ["-Z", "1600", localPath, "--out", scaledPath]);
-      const scaledResult = await worker.recognize(scaledPath);
-      texts.push(String(scaledResult?.data?.text || ""));
-    } catch {
-      // Ignore platform/image preprocessing failures and keep base OCR output.
+    if (baseRows.length === 0) {
+      try {
+        await execFileAsync("sips", ["-Z", "1600", localPath, "--out", scaledPath]);
+        const scaledResult = await worker.recognize(scaledPath);
+        texts.push(String(scaledResult?.data?.text || ""));
+      } catch {
+        // Ignore platform/image preprocessing failures and keep base OCR output.
+      }
     }
 
-    return texts.filter(Boolean).join("\n");
+    const mergedText = texts.filter(Boolean).join("\n");
+    setCachedOcrText(cacheKey, mergedText);
+    return mergedText;
   } finally {
     await fs.unlink(scaledPath).catch(() => {});
     await fs.unlink(localPath).catch(() => {});
@@ -1450,13 +1559,18 @@ async function parseSnapshotFromPost(post, config) {
       const imageUrl = post.images[i];
       try {
         const text = await extractTextWithOcr(imageUrl, post, config);
+        if (!text || !text.trim()) {
+          continue;
+        }
         ocrText += `\n${text}`;
+        parsedRows = extractRowsFromText(ocrText);
+        if (parsedRows.length > 0) {
+          break;
+        }
       } catch {
         continue;
       }
     }
-
-    parsedRows = extractRowsFromText(ocrText);
   }
 
   if (parsedRows.length === 0) {
@@ -1567,6 +1681,65 @@ async function collectNormalCandidates(config, addLog) {
   return candidates;
 }
 
+async function collectTargetCandidates(config, targetPostIds, addLog) {
+  const candidates = [];
+  const allIds = Array.isArray(targetPostIds) ? targetPostIds : [...targetPostIds];
+  const xueqiuIds = [];
+  const weiboIds = [];
+
+  for (const rawId of allIds) {
+    const postId = String(rawId || "").trim();
+    if (/^xq:\d{6,}$/i.test(postId)) {
+      xueqiuIds.push(postId.slice(3));
+      continue;
+    }
+    if (/^wb:[A-Za-z0-9]{6,}$/i.test(postId)) {
+      weiboIds.push(postId.slice(3));
+    }
+  }
+
+  if (xueqiuIds.length > 0) {
+    const xqCookieState = getCookieState(config.xueqiuCookie);
+    if (xqCookieState !== "ok") {
+      addLog("warn", `${cookieWarnText("雪球", xqCookieState)}，已跳过指定雪球帖子抓取`);
+    } else {
+      const posts = await mapWithConcurrency(xueqiuIds, 4, async (postId) => {
+        try {
+          const post = await fetchXueqiuPostById(postId, config, null);
+          addLog("info", `指定帖子抓取成功（雪球）: ${postId}`);
+          return post;
+        } catch (error) {
+          addLog("error", `指定帖子抓取失败（雪球）: ${postId} | ${error.message}`);
+          return null;
+        }
+      });
+      candidates.push(...posts.filter(Boolean));
+    }
+  }
+
+  if (weiboIds.length > 0) {
+    const wbCookieState = getCookieState(config.weiboCookie);
+    if (wbCookieState !== "ok") {
+      addLog("warn", `${cookieWarnText("微博", wbCookieState)}，已跳过指定微博帖子抓取`);
+    } else {
+      const posts = await mapWithConcurrency(weiboIds, 3, async (postId) => {
+        try {
+          const post = await fetchWeiboPostById(postId, config, null);
+          addLog("info", `指定帖子抓取成功（微博）: ${postId}`);
+          return post;
+        } catch (error) {
+          addLog("error", `指定帖子抓取失败（微博）: ${postId} | ${error.message}`);
+          return null;
+        }
+      });
+      candidates.push(...posts.filter(Boolean));
+    }
+  }
+
+  addLog("info", `按选择帖子抓取完成：请求 ${allIds.length} 条，成功 ${candidates.length} 条`);
+  return candidates;
+}
+
 async function collectSuperLudinggongSnapshots(inputConfig, processedPostIds = [], options = {}) {
   const config = mergeAutoTrackingConfig(inputConfig);
   const processedSet = new Set(processedPostIds);
@@ -1591,7 +1764,9 @@ async function collectSuperLudinggongSnapshots(inputConfig, processedPostIds = [
 
   const rawCandidates =
     mode === "backfill"
-      ? await collectBackfillCandidates(config, addLog, options)
+      ? hasTargetPostIds
+        ? await collectTargetCandidates(config, [...targetPostIds], addLog)
+        : await collectBackfillCandidates(config, addLog, options)
       : await collectNormalCandidates(config, addLog);
 
   const titleRegex = buildXueqiuTitleRegex(config);
@@ -1614,14 +1789,14 @@ async function collectSuperLudinggongSnapshots(inputConfig, processedPostIds = [
     }
 
     const titleMatched = isXueqiuTargetTitlePost(post, titleRegex);
-    if (mode === "backfill" && post.source === "xueqiu" && !titleMatched) {
+    if (mode === "backfill" && !hasTargetPostIds && post.source === "xueqiu" && !titleMatched) {
       filteredByTitle += 1;
       continue;
     }
 
     const shouldTryParse =
       post.source === "xueqiu"
-        ? post.fromPinned || titleMatched
+        ? post.fromPinned || titleMatched || hasTargetPostIds
         : post.fromPinned || isLikelyHoldingPost(post, config.keywords) || (Array.isArray(post.images) && post.images.length > 0);
 
     if (!shouldTryParse) {
