@@ -1,0 +1,194 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>后台登录</title>
+    <style>
+      :root {
+        color-scheme: light;
+        --bg: #f3f5f9;
+        --surface: #ffffff;
+        --text: #12151f;
+        --muted: #6f7685;
+        --line: rgba(12, 18, 34, 0.1);
+        --primary: #0071e3;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        min-height: 100vh;
+        font-family: "PingFang SC", "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: radial-gradient(circle at 16% 20%, #e8f3ff 0%, transparent 45%),
+          radial-gradient(circle at 85% 80%, #e9ecef 0%, transparent 45%), var(--bg);
+        color: var(--text);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+      }
+
+      .card {
+        width: 100%;
+        max-width: 420px;
+        background: var(--surface);
+        border: 1px solid var(--line);
+        border-radius: 18px;
+        box-shadow: 0 24px 60px rgba(11, 15, 26, 0.08);
+        padding: 28px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 1.5rem;
+        letter-spacing: -0.02em;
+      }
+
+      p {
+        margin: 8px 0 0;
+        color: var(--muted);
+        font-size: 0.92rem;
+      }
+
+      form {
+        margin-top: 20px;
+        display: grid;
+        gap: 12px;
+      }
+
+      input[type="password"] {
+        width: 100%;
+        border: 1px solid var(--line);
+        border-radius: 12px;
+        min-height: 42px;
+        padding: 0 12px;
+        font-size: 0.95rem;
+      }
+
+      input[type="password"]:focus {
+        outline: 2px solid rgba(0, 113, 227, 0.24);
+        border-color: rgba(0, 113, 227, 0.4);
+      }
+
+      button {
+        min-height: 42px;
+        border: 0;
+        border-radius: 12px;
+        background: var(--primary);
+        color: #fff;
+        font-size: 0.95rem;
+        font-weight: 600;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: not-allowed;
+      }
+
+      .status {
+        margin-top: 12px;
+        font-size: 0.9rem;
+        color: var(--muted);
+        min-height: 1.3em;
+      }
+
+      .status.err {
+        color: #cc2a2a;
+      }
+    </style>
+  </head>
+  <body>
+    <main class="card">
+      <h1>后台配置登录</h1>
+      <p>请输入管理密码后进入配置页面。</p>
+      <form id="loginForm">
+        <input id="password" type="password" placeholder="请输入后台密码" autocomplete="current-password" required />
+        <button id="submitBtn" type="submit">进入后台</button>
+      </form>
+      <div id="status" class="status"></div>
+    </main>
+
+    <script>
+      const els = {
+        form: document.getElementById("loginForm"),
+        password: document.getElementById("password"),
+        submitBtn: document.getElementById("submitBtn"),
+        status: document.getElementById("status")
+      };
+
+      const nextPath = (() => {
+        const raw = new URLSearchParams(window.location.search).get("next") || "/admin.html";
+        if (!raw.startsWith("/")) {
+          return "/admin.html";
+        }
+        return raw;
+      })();
+
+      function setStatus(text, isError) {
+        els.status.textContent = text || "";
+        els.status.classList.toggle("err", Boolean(isError));
+      }
+
+      async function request(url, options = {}) {
+        const response = await fetch(url, {
+          ...options,
+          credentials: "same-origin",
+          headers: {
+            "Content-Type": "application/json",
+            ...(options.headers || {})
+          }
+        });
+
+        const data = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(data.error || "请求失败");
+        }
+        return data;
+      }
+
+      async function bootstrap() {
+        try {
+          const status = await request("/api/admin-auth/status");
+          if (!status.enabled || status.authenticated) {
+            window.location.replace(nextPath);
+          }
+        } catch (_error) {
+          setStatus("无法连接服务，请稍后重试", true);
+        }
+      }
+
+      els.form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const password = String(els.password.value || "");
+        if (!password.trim()) {
+          setStatus("请输入密码", true);
+          return;
+        }
+
+        els.submitBtn.disabled = true;
+        setStatus("正在验证...");
+
+        try {
+          await request("/api/admin-auth/login", {
+            method: "POST",
+            body: JSON.stringify({ password })
+          });
+          setStatus("登录成功，正在跳转...");
+          window.location.replace(nextPath);
+        } catch (error) {
+          setStatus(`登录失败: ${error.message}`, true);
+          els.password.select();
+        } finally {
+          els.submitBtn.disabled = false;
+        }
+      });
+
+      bootstrap();
+    </script>
+  </body>
+</html>

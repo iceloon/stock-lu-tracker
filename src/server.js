@@ -1,5 +1,5 @@
 const path = require("node:path");
-const { randomUUID } = require("node:crypto");
+const { createHash, createHmac, randomUUID, timingSafeEqual } = require("node:crypto");
 
 const express = require("express");
 
@@ -16,6 +16,14 @@ const {
 
 const app = express();
 const PORT = Number(process.env.PORT) || 8787;
+const ADMIN_PASSWORD = String(process.env.ADMIN_PASSWORD || "").trim();
+const ADMIN_AUTH_ENABLED = ADMIN_PASSWORD.length > 0;
+const ADMIN_SESSION_COOKIE = "stock_lu_admin";
+const ADMIN_SESSION_TTL_HOURS = Math.max(1, Number(process.env.ADMIN_SESSION_TTL_HOURS) || 24);
+const ADMIN_SESSION_TTL_MS = ADMIN_SESSION_TTL_HOURS * 60 * 60 * 1000;
+const ADMIN_SESSION_SECRET = createHash("sha256")
+  .update(`stock-lu-admin:${ADMIN_PASSWORD}:${process.pid}:${Date.now()}`)
+  .digest("hex");
 
 const PROFILE_LINKS = {
   xueqiu: "https://xueqiu.com/u/8790885129",
@@ -26,11 +34,6 @@ let autoTrackingRunning = false;
 let autoTrackingTimer = null;
 
 app.use(express.json({ limit: "1mb" }));
-app.use(express.static(path.join(process.cwd(), "public")));
-
-app.get("/auto-sync", (_req, res) => {
-  res.redirect(302, "/admin.html");
-});
 
 function toNumber(value) {
   const number = Number(value);
@@ -59,6 +62,200 @@ function createHttpError(status, message) {
   error.status = status;
   return error;
 }
+
+function parseCookies(cookieHeader) {
+  const cookies = {};
+  const raw = String(cookieHeader || "");
+  if (!raw) {
+    return cookies;
+  }
+
+  for (const segment of raw.split(";")) {
+    const trimmed = segment.trim();
+    if (!trimmed) {
+      continue;
+    }
+    const [key, ...rest] = trimmed.split("=");
+    if (!key) {
+      continue;
+    }
+    const valueRaw = rest.join("=");
+    try {
+      cookies[key] = decodeURIComponent(valueRaw);
+    } catch (_error) {
+      cookies[key] = valueRaw;
+    }
+  }
+
+  return cookies;
+}
+
+function hashText(value) {
+  return createHash("sha256").update(String(value || "")).digest();
+}
+
+function isAdminPasswordMatch(inputPassword) {
+  if (!ADMIN_AUTH_ENABLED) {
+    return true;
+  }
+  return timingSafeEqual(hashText(inputPassword), hashText(ADMIN_PASSWORD));
+}
+
+function createAdminSessionToken() {
+  const payload = {
+    exp: Date.now() + ADMIN_SESSION_TTL_MS,
+    nonce: randomUUID()
+  };
+  const payloadEncoded = Buffer.from(JSON.stringify(payload), "utf8").toString("base64url");
+  const signature = createHmac("sha256", ADMIN_SESSION_SECRET).update(payloadEncoded).digest("base64url");
+  return `${payloadEncoded}.${signature}`;
+}
+
+function verifyAdminSessionToken(token) {
+  if (!ADMIN_AUTH_ENABLED) {
+    return true;
+  }
+
+  const raw = String(token || "").trim();
+  if (!raw.includes(".")) {
+    return false;
+  }
+
+  const [payloadEncoded, signatureEncoded] = raw.split(".");
+  if (!payloadEncoded || !signatureEncoded) {
+    return false;
+  }
+
+  let payload = null;
+  let expectedSignature;
+  let providedSignature;
+
+  try {
+    payload = JSON.parse(Buffer.from(payloadEncoded, "base64url").toString("utf8"));
+    expectedSignature = createHmac("sha256", ADMIN_SESSION_SECRET).update(payloadEncoded).digest();
+    providedSignature = Buffer.from(signatureEncoded, "base64url");
+  } catch (_error) {
+    return false;
+  }
+
+  if (!Buffer.isBuffer(expectedSignature) || !Buffer.isBuffer(providedSignature)) {
+    return false;
+  }
+
+  if (expectedSignature.length !== providedSignature.length) {
+    return false;
+  }
+
+  if (!timingSafeEqual(expectedSignature, providedSignature)) {
+    return false;
+  }
+
+  const expiresAt = Number(payload?.exp) || 0;
+  if (expiresAt <= Date.now()) {
+    return false;
+  }
+
+  return true;
+}
+
+function setAdminSessionCookie(res, token) {
+  const maxAge = Math.max(60, Math.floor(ADMIN_SESSION_TTL_MS / 1000));
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  const value = encodeURIComponent(String(token || ""));
+  res.setHeader(
+    "Set-Cookie",
+    `${ADMIN_SESSION_COOKIE}=${value}; Path=/; Max-Age=${maxAge}; HttpOnly; SameSite=Lax${secure}`
+  );
+}
+
+function clearAdminSessionCookie(res) {
+  const secure = process.env.NODE_ENV === "production" ? "; Secure" : "";
+  res.setHeader(
+    "Set-Cookie",
+    `${ADMIN_SESSION_COOKIE}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax${secure}`
+  );
+}
+
+function isAdminAuthenticated(req) {
+  if (!ADMIN_AUTH_ENABLED) {
+    return true;
+  }
+  const cookies = parseCookies(req.headers?.cookie);
+  return verifyAdminSessionToken(cookies[ADMIN_SESSION_COOKIE]);
+}
+
+function requireAdminAuth(req, res, next) {
+  if (!ADMIN_AUTH_ENABLED) {
+    next();
+    return;
+  }
+
+  if (isAdminAuthenticated(req)) {
+    next();
+    return;
+  }
+
+  const isApiRequest = String(req.originalUrl || req.path || "").startsWith("/api/");
+  if (isApiRequest) {
+    res.status(401).json({ error: "后台未登录，请先输入管理密码" });
+    return;
+  }
+
+  const nextPath = encodeURIComponent(req.originalUrl || "/admin.html");
+  res.redirect(302, `/admin-login.html?next=${nextPath}`);
+}
+
+app.get("/api/admin-auth/status", (req, res) => {
+  res.json({
+    enabled: ADMIN_AUTH_ENABLED,
+    authenticated: isAdminAuthenticated(req),
+    sessionTtlHours: ADMIN_SESSION_TTL_HOURS
+  });
+});
+
+app.post("/api/admin-auth/login", (req, res, next) => {
+  try {
+    if (!ADMIN_AUTH_ENABLED) {
+      res.json({
+        ok: true,
+        enabled: false
+      });
+      return;
+    }
+
+    const password = String(req.body?.password || "");
+    if (!isAdminPasswordMatch(password)) {
+      throw createHttpError(401, "密码错误");
+    }
+
+    const token = createAdminSessionToken();
+    setAdminSessionCookie(res, token);
+
+    res.json({
+      ok: true,
+      enabled: true
+    });
+  } catch (error) {
+    next(error);
+  }
+});
+
+app.post("/api/admin-auth/logout", (_req, res) => {
+  clearAdminSessionCookie(res);
+  res.json({ ok: true });
+});
+
+app.get("/admin.html", requireAdminAuth, (_req, res) => {
+  res.sendFile(path.join(process.cwd(), "public", "admin.html"));
+});
+
+app.get("/auto-sync", (_req, res) => {
+  res.redirect(302, "/admin.html");
+});
+
+app.use(["/api/auto-tracking", "/api/master-snapshots"], requireAdminAuth);
+
+app.use(express.static(path.join(process.cwd(), "public")));
 
 function pushSnapshot(store, source = "manual") {
   const { summary } = buildPortfolio(store.trades, store.quotes);

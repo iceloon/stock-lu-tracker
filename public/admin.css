@@ -380,6 +380,15 @@ textarea {
   color: var(--text);
 }
 
+input[type="checkbox"] {
+  appearance: auto;
+  min-height: auto;
+  padding: 0;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+}
+
 input:focus,
 select:focus,
 textarea:focus {
@@ -477,6 +486,20 @@ th {
   background: #f7f7fa;
   color: #464a55;
   font-weight: 600;
+}
+
+.catalog-check-all {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.78rem;
+  color: #464a55;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.catalog-check-all input[type="checkbox"] {
+  margin: 0;
 }
 
 tbody tr:hover {
@@ -651,4 +674,3 @@ tbody tr.row-selected:hover {
     flex-direction: column;
   }
 }
-

@@ -12,6 +12,7 @@ const els = {
   runBackfillBtn: document.getElementById("runBackfillBtn"),
   loadCatalogBtn: document.getElementById("loadCatalogBtn"),
   importSelectedBtn: document.getElementById("importSelectedBtn"),
+  catalogCheckAll: document.getElementById("catalogCheckAll"),
   viewLatestBtn: document.getElementById("viewLatestBtn"),
   autoSyncText: document.getElementById("autoSyncText"),
   latestSnapshotMeta: document.getElementById("latestSnapshotMeta"),
@@ -80,6 +81,48 @@ function monthLabelFromTitleOrDate(title, postedAt) {
   return monthLabelByDate(postedAt);
 }
 
+function normalizePostId(value) {
+  return String(value || "").trim();
+}
+
+function getCatalogCheckboxes() {
+  if (!els.catalogBody) {
+    return [];
+  }
+
+  return Array.from(els.catalogBody.querySelectorAll("input[data-catalog-id]"));
+}
+
+function syncCatalogCheckAllState() {
+  if (!els.catalogCheckAll) {
+    return;
+  }
+
+  const selectable = getCatalogCheckboxes().filter((input) => !input.disabled);
+  const selectedCount = selectable.filter((input) => input.checked).length;
+
+  if (selectable.length === 0) {
+    els.catalogCheckAll.checked = false;
+    els.catalogCheckAll.indeterminate = false;
+    els.catalogCheckAll.disabled = true;
+    return;
+  }
+
+  els.catalogCheckAll.disabled = false;
+  els.catalogCheckAll.checked = selectedCount > 0 && selectedCount === selectable.length;
+  els.catalogCheckAll.indeterminate = selectedCount > 0 && selectedCount < selectable.length;
+}
+
+function updateCatalogMeta() {
+  if (!els.catalogMeta) {
+    return;
+  }
+
+  const selectable = getCatalogCheckboxes().filter((input) => !input.disabled);
+  const selectedCount = selectable.filter((input) => input.checked).length;
+  els.catalogMeta.textContent = `共 ${state.catalogPosts.length} 条，可选 ${selectable.length} 条，已选 ${selectedCount} 条`;
+}
+
 function getViewingSnapshot() {
   if (state.selectedSnapshotId) {
     const hit = state.snapshots.find((item) => item.id === state.selectedSnapshotId);
@@ -95,6 +138,7 @@ async function request(url, options = {}) {
   try {
     response = await fetch(url, {
       ...options,
+      credentials: "same-origin",
       headers: {
         "Content-Type": "application/json",
         ...(options.headers || {})
@@ -102,6 +146,12 @@ async function request(url, options = {}) {
     });
   } catch (error) {
     throw new Error("无法连接本地服务，请确认 `npm start` 正在运行");
+  }
+
+  if (response.status === 401) {
+    const next = encodeURIComponent(window.location.pathname + window.location.search);
+    window.location.replace(`/admin-login.html?next=${next}`);
+    throw new Error("后台未登录或登录已过期，请重新登录");
   }
 
   const data = await response.json().catch(() => ({}));
@@ -247,21 +297,31 @@ function renderCatalog() {
   if (!state.catalogPosts.length) {
     els.catalogMeta.textContent = "未加载";
     els.catalogBody.innerHTML = `<tr><td colspan="6" class="empty">尚未抓取目录，点击“抓取全部月份目录”。</td></tr>`;
+    if (els.catalogCheckAll) {
+      els.catalogCheckAll.checked = false;
+      els.catalogCheckAll.indeterminate = false;
+      els.catalogCheckAll.disabled = true;
+    }
     return;
   }
 
-  const importedPostIds = new Set((state.snapshots || []).map((item) => item.postId));
+  const importedPostIds = new Set(
+    (state.snapshots || []).map((item) => normalizePostId(item.postId)).filter(Boolean)
+  );
   const rows = state.catalogPosts
     .map((item) => {
-      const imported = Boolean(item.imported) || importedPostIds.has(item.postId);
-      const statusText = imported ? "已导入" : item.processed ? "已处理" : "未导入";
-      const statusClass = imported ? "pos" : "";
+      const postId = normalizePostId(item.postId);
+      const hasPostId = Boolean(postId);
+      const imported = hasPostId && (Boolean(item.imported) || importedPostIds.has(postId));
+      const statusText = !hasPostId ? "缺少帖子ID" : imported ? "已导入" : item.processed ? "已处理" : "未导入";
+      const statusClass = imported ? "pos" : !hasPostId ? "neg" : "";
       const monthLabel = monthLabelFromTitleOrDate(item.title, item.postedAt);
       const safeTitle = item.title || "(无标题)";
+      const checkboxAttrs = hasPostId ? `data-catalog-id="${postId}"` : "disabled";
 
       return `
         <tr>
-          <td><input type="checkbox" data-catalog-id="${item.postId}" ${imported ? "disabled" : ""} /></td>
+          <td><input type="checkbox" ${checkboxAttrs} /></td>
           <td class="mono">${monthLabel}</td>
           <td>${safeTitle}</td>
           <td>${formatDateTime(item.postedAt)}</td>
@@ -273,7 +333,8 @@ function renderCatalog() {
     .join("");
 
   els.catalogBody.innerHTML = rows;
-  els.catalogMeta.textContent = `共 ${state.catalogPosts.length} 条，可勾选未导入月份`;
+  syncCatalogCheckAllState();
+  updateCatalogMeta();
 }
 
 function renderSnapshotHistory() {
@@ -455,8 +516,10 @@ async function handleLoadCatalog() {
 
 async function handleImportSelected() {
   try {
-    const checked = Array.from(document.querySelectorAll("input[data-catalog-id]:checked"));
-    const postIds = checked.map((item) => String(item.dataset.catalogId || "").trim()).filter(Boolean);
+    const checked = Array.from(els.catalogBody?.querySelectorAll("input[data-catalog-id]:checked") || []);
+    const postIds = [
+      ...new Set(checked.map((item) => normalizePostId(item.dataset.catalogId)).filter(Boolean))
+    ];
 
     if (postIds.length === 0) {
       setStatus("请先勾选要导入的月份帖子", "err");
@@ -494,6 +557,37 @@ async function handleImportSelected() {
   } catch (error) {
     setStatus(`导入失败: ${error.message}`, "err");
   }
+}
+
+function handleCatalogCheckAllChange(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  const shouldCheck = target.checked;
+  getCatalogCheckboxes()
+    .filter((input) => !input.disabled)
+    .forEach((input) => {
+      input.checked = shouldCheck;
+    });
+
+  syncCatalogCheckAllState();
+  updateCatalogMeta();
+}
+
+function handleCatalogBodyChange(event) {
+  const target = event.target;
+  if (!(target instanceof HTMLInputElement)) {
+    return;
+  }
+
+  if (!target.matches("input[data-catalog-id]")) {
+    return;
+  }
+
+  syncCatalogCheckAllState();
+  updateCatalogMeta();
 }
 
 function handleSnapshotTableClick(event) {
@@ -542,6 +636,14 @@ function bindEvents() {
 
   if (els.importSelectedBtn) {
     els.importSelectedBtn.addEventListener("click", handleImportSelected);
+  }
+
+  if (els.catalogCheckAll) {
+    els.catalogCheckAll.addEventListener("change", handleCatalogCheckAllChange);
+  }
+
+  if (els.catalogBody) {
+    els.catalogBody.addEventListener("change", handleCatalogBodyChange);
   }
 
   if (els.snapshotHistoryBody) {

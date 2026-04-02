@@ -29,6 +29,11 @@ npm start
 - http://localhost:8787
 - 后台配置页：http://localhost:8787/admin.html
 
+可选安全项（建议开启）：
+
+- 设置环境变量 `ADMIN_PASSWORD` 后，后台配置页和自动抓取相关接口会启用密码验证
+- 登录入口：`http://localhost:8787/admin-login.html`
+
 ## 3. 首次配置（必须）
 
 页面里进入「自动抓取配置」并粘贴：
@@ -74,6 +79,7 @@ docker run -d \
   -v $(pwd)/data:/app/data \
   -e NODE_ENV=production \
   -e PORT=8787 \
+  -e ADMIN_PASSWORD='请改成你的后台密码' \
   -e TESSDATA_PREFIX=/app \
   icekale/stock-lu-tracker:latest
 ```
@@ -89,11 +95,17 @@ docker run -d \
 docker compose up -d
 ```
 
+如需开启后台密码，在 compose 的 `environment` 里增加：
+
+```yaml
+ADMIN_PASSWORD: "请改成你的后台密码"
+```
+
 ### 6.3 本地构建并运行
 
 ```bash
 docker build -t icekale/stock-lu-tracker:latest .
-docker run -d --name stock-lu -p 8787:8787 -v $(pwd)/data:/app/data icekale/stock-lu-tracker:latest
+docker run -d --name stock-lu -p 8787:8787 -v $(pwd)/data:/app/data -e ADMIN_PASSWORD='请改成你的后台密码' icekale/stock-lu-tracker:latest
 ```
 
 ## 7. 自动发布 Docker（GitHub Actions）

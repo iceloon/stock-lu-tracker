@@ -11,6 +11,7 @@ services:
       NODE_ENV: production
       PORT: 8787
       TESSDATA_PREFIX: /app
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     volumes:
       - ./data:/app/data
     restart: unless-stopped
