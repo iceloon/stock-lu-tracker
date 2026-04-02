@@ -1,0 +1,17 @@
+services:
+  stock-lu:
+    image: icekale/stock-lu-tracker:latest
+    container_name: stock-lu
+    network_mode: bridge
+    ports:
+      - "8787:8787"
+    environment:
+      TZ: Asia/Shanghai
+      NODE_ENV: production
+      PORT: 8787
+      TESSDATA_PREFIX: /app
+      ADMIN_PASSWORD: "请改成你的后台密码"
+    user: "99:100"
+    volumes:
+      - /mnt/user/appdata/stock-lu/data:/app/data
+    restart: unless-stopped

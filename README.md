@@ -108,6 +108,37 @@ docker build -t icekale/stock-lu-tracker:latest .
 docker run -d --name stock-lu -p 8787:8787 -v $(pwd)/data:/app/data -e ADMIN_PASSWORD='请改成你的后台密码' icekale/stock-lu-tracker:latest
 ```
 
+### 6.4 Unraid（docker compose，bridge + 默认权限）
+
+> 适用于 Unraid 的 Compose Manager，使用 `bridge` 网络模式，数据目录映射到 `appdata`。
+
+```yaml
+services:
+  stock-lu:
+    image: icekale/stock-lu-tracker:latest
+    container_name: stock-lu
+    network_mode: bridge
+    ports:
+      - "8787:8787"
+    environment:
+      TZ: Asia/Shanghai
+      NODE_ENV: production
+      PORT: 8787
+      TESSDATA_PREFIX: /app
+      ADMIN_PASSWORD: "请改成你的后台密码"
+    user: "99:100"
+    volumes:
+      - /mnt/user/appdata/stock-lu/data:/app/data
+    restart: unless-stopped
+```
+
+说明：
+
+- `user: "99:100"` 为 Unraid 常见默认用户组（`nobody:users`），可避免写入权限问题
+- 若你已在 Unraid 模板里统一处理权限，也可以去掉 `user` 字段
+- 首次部署后后台地址：`http://<你的UnraidIP>:8787/admin.html`
+- 也可直接使用仓库内示例文件：`docker-compose.unraid.yml`
+
 ## 7. 自动发布 Docker（GitHub Actions）
 
 已配置工作流：`.github/workflows/docker-publish.yml`
