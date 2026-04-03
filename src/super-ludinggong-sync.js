@@ -1,11 +1,3 @@
-const fs = require("node:fs/promises");
-const os = require("node:os");
-const path = require("node:path");
-const { execFile } = require("node:child_process");
-const { promisify } = require("node:util");
-
-const { createWorker } = require("tesseract.js");
-
 const XUEQIU_UID = "8790885129";
 const WEIBO_UID = "3962719063";
 
@@ -44,11 +36,17 @@ const DEFAULT_AUTO_TRACKING = {
   keywords: ["最新持仓", "调仓", "新开仓", "已清仓", "持仓", "组合"]
 };
 
-let ocrWorkerPromise;
-const execFileAsync = promisify(execFile);
 const OCR_CACHE_MAX_ITEMS = clampNumber(process.env.OCR_CACHE_MAX_ITEMS, 1200, 100, 10000);
 const OCR_CACHE_TTL_MINUTES = clampNumber(process.env.OCR_CACHE_TTL_MINUTES, 24 * 60, 10, 14 * 24 * 60);
 const OCR_CACHE_TTL_MS = OCR_CACHE_TTL_MINUTES * 60 * 1000;
+const QWEN_OCR_API_KEY = String(process.env.QWEN_OCR_API_KEY || process.env.DASHSCOPE_API_KEY || "").trim();
+const QWEN_OCR_BASE_URL = String(process.env.QWEN_OCR_BASE_URL || "https://dashscope.aliyuncs.com/compatible-mode/v1")
+  .trim()
+  .replace(/\/+$/, "");
+const QWEN_OCR_MODEL = String(process.env.QWEN_OCR_MODEL || "qwen-vl-ocr-2025-11-20").trim();
+const QWEN_OCR_TIMEOUT_MS = clampNumber(process.env.QWEN_OCR_TIMEOUT_MS, 60000, 10000, 300000);
+const QWEN_OCR_PROMPT = String(process.env.QWEN_OCR_PROMPT || "").trim();
+const QWEN_OCR_MAX_TOKENS = clampNumber(process.env.QWEN_OCR_MAX_TOKENS, 4096, 256, 16000);
 const ocrTextCache = new Map();
 
 function toDateIso(value) {
@@ -102,6 +100,133 @@ function parseNumeric(value) {
 
   const parsed = Number(cleaned);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function parseLeadingNumeric(value) {
+  const matched = String(value || "").match(/^[+\-−]?\s*\d[\d,，]*(?:\.\d+)?/);
+  if (!matched) {
+    return null;
+  }
+  return parseNumeric(matched[0]);
+}
+
+function normalizeAshareSnapshotRow(row) {
+  const output = { ...row };
+  const balanceQty = parseNumeric(output.balanceQty);
+  const availableQty = parseNumeric(output.availableQty);
+  let holdingQty = parseNumeric(output.holdingQty);
+  const referenceCost = parseNumeric(output.referenceCost);
+  let latestPrice = parseNumeric(output.latestPrice);
+  let marketValue = parseNumeric(output.marketValue);
+  let floatingPnl = parseNumeric(output.floatingPnl);
+  let pnlPct = parseNumeric(output.pnlPct);
+  const trailingPct = parseLeadingNumeric(output.marketName);
+
+  if (
+    Number.isFinite(balanceQty) &&
+    balanceQty > 0 &&
+    Number.isFinite(availableQty) &&
+    availableQty > balanceQty * 1.2
+  ) {
+    // OCR may glue "可用余额 + 成本价" into one number, prefer股票余额兜底.
+    holdingQty = balanceQty;
+    output.availableQty = balanceQty;
+  }
+
+  if (!Number.isFinite(holdingQty) || holdingQty <= 0) {
+    if (Number.isFinite(availableQty) && availableQty > 0) {
+      holdingQty = availableQty;
+    } else if (Number.isFinite(balanceQty) && balanceQty > 0) {
+      holdingQty = balanceQty;
+    }
+  }
+  output.holdingQty = holdingQty;
+
+  if (!Number.isFinite(pnlPct) || Math.abs(pnlPct) > 500) {
+    if (Number.isFinite(trailingPct)) {
+      pnlPct = trailingPct;
+    }
+  }
+
+  if (
+    Number.isFinite(latestPrice) &&
+    latestPrice > 10_000 &&
+    Number.isFinite(holdingQty) &&
+    holdingQty > 0 &&
+    Number.isFinite(referenceCost) &&
+    referenceCost > 0 &&
+    referenceCost < 1_000
+  ) {
+    const oldLatestPrice = latestPrice;
+    const oldMarketValue = marketValue;
+    const oldFloatingPnl = floatingPnl;
+    const impliedPrice = oldLatestPrice / holdingQty;
+    const costGap = Math.abs(impliedPrice - referenceCost) / Math.max(referenceCost, 1);
+
+    if (impliedPrice > 0 && impliedPrice < 10_000 && costGap < 2) {
+      latestPrice = impliedPrice;
+      marketValue = oldLatestPrice;
+
+      if (Number.isFinite(oldMarketValue)) {
+        if (Number.isFinite(oldFloatingPnl) && oldFloatingPnl >= 0 && oldFloatingPnl < 1_000) {
+          floatingPnl = oldMarketValue + oldFloatingPnl / 1_000;
+        } else {
+          floatingPnl = oldMarketValue;
+        }
+      }
+    }
+  }
+
+  const expectedValue =
+    Number.isFinite(holdingQty) && holdingQty > 0 && Number.isFinite(latestPrice) && latestPrice > 0
+      ? holdingQty * latestPrice
+      : null;
+
+  if (Number.isFinite(expectedValue) && expectedValue > 0) {
+    const ratio = Number.isFinite(marketValue) && marketValue > 0 ? marketValue / expectedValue : 0;
+    if (!Number.isFinite(ratio) || ratio < 0.2 || ratio > 5) {
+      if (
+        Number.isFinite(floatingPnl) &&
+        floatingPnl > expectedValue * 0.5 &&
+        floatingPnl < expectedValue * 1.5
+      ) {
+        marketValue = floatingPnl;
+      } else {
+        marketValue = expectedValue;
+      }
+    }
+
+    const impliedPrice = marketValue / holdingQty;
+    if (
+      Number.isFinite(impliedPrice) &&
+      impliedPrice > 0 &&
+      Number.isFinite(latestPrice) &&
+      latestPrice > 0 &&
+      Math.round(latestPrice) === latestPrice
+    ) {
+      const gap = Math.abs(impliedPrice - latestPrice) / latestPrice;
+      if (gap <= 0.2 && gap > 0.001) {
+        latestPrice = impliedPrice;
+      }
+    }
+  }
+
+  output.latestPrice = Number.isFinite(latestPrice) ? Number(latestPrice.toFixed(3)) : output.latestPrice;
+  output.marketValue = Number.isFinite(marketValue) ? marketValue : output.marketValue;
+  output.floatingPnl = Number.isFinite(floatingPnl) ? floatingPnl : null;
+  output.pnlPct = Number.isFinite(pnlPct) ? pnlPct : null;
+
+  if (Number.isFinite(referenceCost) && Number.isFinite(holdingQty) && holdingQty > 0) {
+    output.referenceHoldingCost = referenceCost * holdingQty;
+  }
+
+  if (Number.isFinite(trailingPct)) {
+    output.marketName = sanitizeName(
+      String(output.marketName || "").replace(/^[+\-−]?\s*\d[\d,，]*(?:\.\d+)?/, "")
+    );
+  }
+
+  return output;
 }
 
 function isSampleCookie(cookie) {
@@ -392,12 +517,76 @@ function dedupeRows(rows) {
   return deduped;
 }
 
+function rowQualityScore(row) {
+  const qty = parseNumeric(row?.holdingQty ?? row?.availableQty ?? row?.balanceQty ?? row?.changeQty);
+  const referenceCost = parseNumeric(row?.referenceCost ?? row?.latestCost);
+  const referenceHoldingCost = parseNumeric(row?.referenceHoldingCost);
+  const latestPrice = parseNumeric(row?.latestPrice);
+  const marketValue = parseNumeric(row?.marketValue);
+  let score = 0;
+
+  if (Number.isFinite(qty) && qty > 0 && Number.isFinite(referenceCost) && Math.abs(referenceCost) > 0.000001 && Number.isFinite(referenceHoldingCost)) {
+    const expectedCost = Math.abs(qty * referenceCost);
+    const actualCost = Math.abs(referenceHoldingCost);
+    score += (Math.abs(expectedCost - actualCost) / Math.max(actualCost, 1)) * 40;
+  } else {
+    score += 6;
+  }
+
+  if (Number.isFinite(qty) && qty > 0 && Number.isFinite(latestPrice) && latestPrice > 0 && Number.isFinite(marketValue) && marketValue > 0) {
+    const expectedValue = qty * latestPrice;
+    score += (Math.abs(expectedValue - marketValue) / Math.max(expectedValue, 1)) * 25;
+  }
+
+  if (!String(row?.name || "").trim()) {
+    score += 2;
+  }
+
+  return score;
+}
+
+function mergeRowsBySymbol(rows) {
+  const map = new Map();
+
+  for (const row of dedupeRows(rows)) {
+    const symbol = String(row?.symbol || "").toUpperCase().trim();
+    if (!symbol) {
+      continue;
+    }
+
+    const existed = map.get(symbol);
+    if (!existed) {
+      map.set(symbol, row);
+      continue;
+    }
+
+    const currentScore = rowQualityScore(row);
+    const existedScore = rowQualityScore(existed);
+    if (currentScore + 0.0001 < existedScore) {
+      map.set(symbol, row);
+      continue;
+    }
+
+    if (Math.abs(currentScore - existedScore) <= 0.0001) {
+      const currentMarketValue = parseNumeric(row?.marketValue) || 0;
+      const existedMarketValue = parseNumeric(existed?.marketValue) || 0;
+      if (currentMarketValue > existedMarketValue) {
+        map.set(symbol, row);
+      }
+    }
+  }
+
+  return [...map.values()];
+}
+
 function normalizeOcrLine(line) {
   return String(line || "")
     .replace(/[|｜]/g, " ")
     .replace(/[，,]/g, " ")
     .replace(/[。；;]/g, " ")
     .replace(/(\d)\s*\.\s*(\d)/g, "$1.$2")
+    .replace(/\b(\d{1,3})\s+(\d{3})(?=\s+\d{4,}(?:\.\d+)?\b)/g, "$1.$2")
+    .replace(/\b(\d{5,})\s+(\d{1,3})(?=\s+[+\-−]?\d{1,3}\.\d{1,2}\b)/g, "$1.$2")
     .replace(/([+\-−])\s+(\d)/g, "$1$2")
     .replace(/\s{2,}/g, " ")
     .trim();
@@ -426,6 +615,79 @@ function normalizeCodeToken(rawToken) {
   }
 
   return null;
+}
+
+function inferHoldingQtyFromCost(referenceCost, referenceHoldingCost) {
+  const cost = parseNumeric(referenceCost);
+  const totalCost = parseNumeric(referenceHoldingCost);
+  if (!Number.isFinite(cost) || !Number.isFinite(totalCost) || Math.abs(cost) < 0.000001 || Math.abs(totalCost) < 1) {
+    return null;
+  }
+
+  const implied = Math.abs(totalCost / cost);
+  if (!Number.isFinite(implied) || implied < 1) {
+    return null;
+  }
+
+  const candidates = [Math.round(implied), Math.round(implied / 100) * 100]
+    .filter((item) => Number.isFinite(item) && item > 0);
+
+  let picked = null;
+  let minGap = Infinity;
+  for (const candidate of candidates) {
+    const gap = Math.abs(candidate - implied) / implied;
+    if (gap < minGap) {
+      minGap = gap;
+      picked = candidate;
+    }
+  }
+
+  if (!Number.isFinite(picked) || minGap > 0.03) {
+    return null;
+  }
+
+  return picked;
+}
+
+function alignQtyToMarketLot(symbol, rawQty) {
+  const qty = parseNumeric(rawQty);
+  if (!Number.isFinite(qty) || qty <= 0) {
+    return qty;
+  }
+
+  const symbolText = String(symbol || "").trim().toUpperCase();
+  const isHkSymbol = /^\d{4,5}(?:\.HK)?$/.test(symbolText);
+  if (!isHkSymbol) {
+    return qty;
+  }
+
+  const roundedBy100 = Math.round(qty / 100) * 100;
+  if (!Number.isFinite(roundedBy100) || roundedBy100 <= 0) {
+    return qty;
+  }
+
+  const diffRatio = Math.abs(qty - roundedBy100) / Math.max(qty, 1);
+  return diffRatio <= 0.01 ? roundedBy100 : qty;
+}
+
+function reconcileHoldingQty(rawQty, referenceCost, referenceHoldingCost, symbol = "") {
+  const parsedQty = parseNumeric(rawQty);
+  const inferredQty = inferHoldingQtyFromCost(referenceCost, referenceHoldingCost);
+
+  if (!Number.isFinite(parsedQty) || parsedQty <= 0) {
+    return alignQtyToMarketLot(symbol, Number.isFinite(inferredQty) ? inferredQty : parsedQty);
+  }
+
+  if (!Number.isFinite(inferredQty) || inferredQty <= 0) {
+    return alignQtyToMarketLot(symbol, parsedQty);
+  }
+
+  const diffRatio = Math.abs(parsedQty - inferredQty) / Math.max(inferredQty, 1);
+  if (diffRatio >= 0.08) {
+    return alignQtyToMarketLot(symbol, inferredQty);
+  }
+
+  return alignQtyToMarketLot(symbol, parsedQty);
 }
 
 function extractRowsFromText(inputText) {
@@ -464,11 +726,12 @@ function extractRowsFromText(inputText) {
 
     const name = sanitizeName(matched[1]);
     const symbol = String(matched[2] || "").toUpperCase();
-    const holdingQty = parseNumeric(matched[3]);
+    const holdingQtyRaw = parseNumeric(matched[3]);
     const referenceCost = parseNumeric(matched[4]);
     const referenceHoldingCost = parseNumeric(matched[5]);
     const marketValue = parseNumeric(matched[6]);
     const pnlPct = parseNumeric(matched[7]);
+    const holdingQty = reconcileHoldingQty(holdingQtyRaw, referenceCost, referenceHoldingCost, symbol);
 
     if (
       !isLikelySymbol(symbol) ||
@@ -540,24 +803,26 @@ function extractRowsFromText(inputText) {
     const holdingQty = Number.isFinite(availableQty) ? availableQty : balanceQty;
     const referenceHoldingCost = Number.isFinite(referenceCost) ? referenceCost * holdingQty : null;
 
-    rows.push({
-      symbol,
-      name,
-      actionLabel: "持仓快照",
-      action: "HOLD",
-      changeQty: holdingQty,
-      latestCost: referenceCost,
-      holdingQty,
-      availableQty,
-      balanceQty,
-      referenceCost,
-      latestPrice,
-      referenceHoldingCost,
-      marketValue,
-      floatingPnl: Number.isFinite(floatingPnl) ? floatingPnl : null,
-      pnlPct: Number.isFinite(pnlPct) ? pnlPct : null,
-      marketName
-    });
+    rows.push(
+      normalizeAshareSnapshotRow({
+        symbol,
+        name,
+        actionLabel: "持仓快照",
+        action: "HOLD",
+        changeQty: holdingQty,
+        latestCost: referenceCost,
+        holdingQty,
+        availableQty,
+        balanceQty,
+        referenceCost,
+        latestPrice,
+        referenceHoldingCost,
+        marketValue,
+        floatingPnl: Number.isFinite(floatingPnl) ? floatingPnl : null,
+        pnlPct: Number.isFinite(pnlPct) ? pnlPct : null,
+        marketName
+      })
+    );
   }
 
   for (const line of normalizedLines) {
@@ -696,24 +961,26 @@ function extractRowsFromText(inputText) {
 
     const holdingQty = Number.isFinite(availableQty) ? availableQty : balanceQty;
 
-    rows.push({
-      symbol: normalizedCode,
-      name,
-      actionLabel: "持仓快照",
-      action: "HOLD",
-      changeQty: holdingQty,
-      latestCost: referenceCost,
-      holdingQty,
-      availableQty,
-      balanceQty,
-      referenceCost,
-      latestPrice,
-      referenceHoldingCost: Number.isFinite(referenceCost) ? referenceCost * holdingQty : null,
-      marketValue,
-      floatingPnl: Number.isFinite(floatingPnl) ? floatingPnl : null,
-      pnlPct: Number.isFinite(pnlPct) ? pnlPct : null,
-      marketName: ""
-    });
+    rows.push(
+      normalizeAshareSnapshotRow({
+        symbol: normalizedCode,
+        name,
+        actionLabel: "持仓快照",
+        action: "HOLD",
+        changeQty: holdingQty,
+        latestCost: referenceCost,
+        holdingQty,
+        availableQty,
+        balanceQty,
+        referenceCost,
+        latestPrice,
+        referenceHoldingCost: Number.isFinite(referenceCost) ? referenceCost * holdingQty : null,
+        marketValue,
+        floatingPnl: Number.isFinite(floatingPnl) ? floatingPnl : null,
+        pnlPct: Number.isFinite(pnlPct) ? pnlPct : null,
+        marketName: ""
+      })
+    );
   }
 
   return dedupeRows(rows);
@@ -1409,28 +1676,6 @@ async function mapWithConcurrency(list, concurrency, worker) {
   return results;
 }
 
-async function getOcrWorker() {
-  if (!ocrWorkerPromise) {
-    ocrWorkerPromise = createWorker("chi_sim+eng", 1, {
-      logger: () => {},
-      errorHandler: () => {}
-    })
-      .then(async (worker) => {
-        await worker.setParameters({
-          tessedit_pageseg_mode: "6",
-          preserve_interword_spaces: "1"
-        });
-        return worker;
-      })
-      .catch((error) => {
-        ocrWorkerPromise = null;
-        throw error;
-      });
-  }
-
-  return ocrWorkerPromise;
-}
-
 function getImageHeadersForPost(post, config) {
   const headers = {
     "User-Agent": "Mozilla/5.0",
@@ -1453,29 +1698,29 @@ function getImageHeadersForPost(post, config) {
   return headers;
 }
 
-function getImageFileExt(contentType, imageUrl) {
+function detectImageMimeType(contentType, imageUrl) {
   const type = String(contentType || "").toLowerCase();
   if (type.includes("png")) {
-    return "png";
+    return "image/png";
   }
   if (type.includes("webp")) {
-    return "webp";
+    return "image/webp";
   }
   if (type.includes("jpeg") || type.includes("jpg")) {
-    return "jpg";
+    return "image/jpeg";
   }
 
   const lowerUrl = String(imageUrl || "").toLowerCase();
   if (lowerUrl.includes(".png")) {
-    return "png";
+    return "image/png";
   }
   if (lowerUrl.includes(".webp")) {
-    return "webp";
+    return "image/webp";
   }
-  return "jpg";
+  return "image/jpeg";
 }
 
-async function downloadImageToTempFile(imageUrl, post, config) {
+async function downloadImageBytes(imageUrl, post, config) {
   const headers = getImageHeadersForPost(post, config);
   const response = await fetchWithTimeout(
     imageUrl,
@@ -1489,21 +1734,133 @@ async function downloadImageToTempFile(imageUrl, post, config) {
     throw new Error(`图片下载失败 (${response.status})`);
   }
 
+  const contentType = String(response.headers.get("content-type") || "").toLowerCase();
+  if (contentType && !contentType.includes("image/")) {
+    throw new Error(`图片下载返回非图片内容 (${contentType})`);
+  }
+
   const arrayBuffer = await response.arrayBuffer();
   const bytes = Buffer.from(arrayBuffer);
   if (bytes.length < 200) {
     throw new Error("图片内容异常（字节过小）");
   }
 
-  const contentType = response.headers.get("content-type");
-  const ext = getImageFileExt(contentType, imageUrl);
-  const filePath = path.join(
-    os.tmpdir(),
-    `stock-lu-ocr-${Date.now()}-${Math.random().toString(16).slice(2)}.${ext}`
-  );
+  return {
+    bytes,
+    mimeType: detectImageMimeType(contentType, imageUrl)
+  };
+}
 
-  await fs.writeFile(filePath, bytes);
-  return filePath;
+function buildImageDataUrl(bytes, mimeType) {
+  const type = String(mimeType || "image/jpeg").trim().toLowerCase() || "image/jpeg";
+  return `data:${type};base64,${Buffer.from(bytes).toString("base64")}`;
+}
+
+function extractOcrTextFromCompletion(data) {
+  const message = data?.choices?.[0]?.message || {};
+  const content = message.content;
+  if (typeof content === "string") {
+    return content.trim();
+  }
+
+  if (Array.isArray(content)) {
+    return content
+      .map((item) => {
+        if (typeof item === "string") {
+          return item;
+        }
+        if (item?.type === "text") {
+          return String(item.text || "");
+        }
+        return "";
+      })
+      .filter(Boolean)
+      .join("\n")
+      .trim();
+  }
+
+  if (typeof message.reasoning_content === "string") {
+    return message.reasoning_content.trim();
+  }
+
+  return String(data?.output?.text || "").trim();
+}
+
+async function callQwenOcrByDataUrl(imageDataUrl) {
+  if (!QWEN_OCR_API_KEY) {
+    throw new Error("未配置 QWEN_OCR_API_KEY（或 DASHSCOPE_API_KEY）");
+  }
+
+  const endpoint = `${QWEN_OCR_BASE_URL}/chat/completions`;
+  async function requestOcr(content) {
+    const payload = {
+      model: QWEN_OCR_MODEL,
+      messages: [
+        {
+          role: "user",
+          content
+        }
+      ],
+      temperature: 0,
+      max_tokens: QWEN_OCR_MAX_TOKENS
+    };
+
+    const response = await fetchWithTimeout(
+      endpoint,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${QWEN_OCR_API_KEY}`
+        },
+        body: JSON.stringify(payload)
+      },
+      QWEN_OCR_TIMEOUT_MS
+    );
+
+    const text = await response.text();
+    const data = safeJsonParse(text);
+
+    if (!response.ok) {
+      const detail = data?.error?.message || data?.message || shortText(text) || "未知错误";
+      throw new Error(`千问 OCR 请求失败 (${response.status}): ${detail}`);
+    }
+
+    if (!data) {
+      throw new Error("千问 OCR 返回非 JSON");
+    }
+
+    return extractOcrTextFromCompletion(data);
+  }
+
+  const imageOnlyContent = [
+    {
+      type: "image_url",
+      image_url: {
+        url: imageDataUrl
+      }
+    }
+  ];
+
+  const baseText = await requestOcr(imageOnlyContent);
+  if (String(baseText || "").trim()) {
+    return baseText;
+  }
+
+  if (QWEN_OCR_PROMPT) {
+    const promptedText = await requestOcr([
+      ...imageOnlyContent,
+      {
+        type: "text",
+        text: QWEN_OCR_PROMPT
+      }
+    ]);
+    if (String(promptedText || "").trim()) {
+      return promptedText;
+    }
+  }
+
+  throw new Error("千问 OCR 返回空文本");
 }
 
 async function extractTextWithOcr(imageUrl, post, config) {
@@ -1513,47 +1870,22 @@ async function extractTextWithOcr(imageUrl, post, config) {
     return cached;
   }
 
-  const localPath = await downloadImageToTempFile(imageUrl, post, config);
-  const scaledPath = path.join(
-    os.tmpdir(),
-    `stock-lu-ocr-upscaled-${Date.now()}-${Math.random().toString(16).slice(2)}.png`
-  );
-
-  try {
-    const worker = await getOcrWorker();
-    const texts = [];
-
-    const baseResult = await worker.recognize(localPath);
-    const baseText = String(baseResult?.data?.text || "");
-    texts.push(baseText);
-    const baseRows = extractRowsFromText(baseText);
-
-    if (baseRows.length === 0) {
-      try {
-        await execFileAsync("sips", ["-Z", "1600", localPath, "--out", scaledPath]);
-        const scaledResult = await worker.recognize(scaledPath);
-        texts.push(String(scaledResult?.data?.text || ""));
-      } catch {
-        // Ignore platform/image preprocessing failures and keep base OCR output.
-      }
-    }
-
-    const mergedText = texts.filter(Boolean).join("\n");
-    setCachedOcrText(cacheKey, mergedText);
-    return mergedText;
-  } finally {
-    await fs.unlink(scaledPath).catch(() => {});
-    await fs.unlink(localPath).catch(() => {});
-  }
+  const { bytes, mimeType } = await downloadImageBytes(imageUrl, post, config);
+  const imageDataUrl = buildImageDataUrl(bytes, mimeType);
+  const text = await callQwenOcrByDataUrl(imageDataUrl);
+  setCachedOcrText(cacheKey, text);
+  return text;
 }
 
-async function parseSnapshotFromPost(post, config) {
+async function parseSnapshotFromPost(post, config, addLog = null) {
   const textRows = extractRowsFromText(post.text);
   let parsedRows = textRows;
   let ocrText = "";
 
   if (parsedRows.length === 0 && config.ocrEnabled && Array.isArray(post.images) && post.images.length > 0) {
     const maxImages = Math.min(config.ocrMaxImagesPerPost, post.images.length);
+    const ocrTexts = [];
+    const ocrRows = [];
 
     for (let i = 0; i < maxImages; i += 1) {
       const imageUrl = post.images[i];
@@ -1562,14 +1894,28 @@ async function parseSnapshotFromPost(post, config) {
         if (!text || !text.trim()) {
           continue;
         }
-        ocrText += `\n${text}`;
-        parsedRows = extractRowsFromText(ocrText);
-        if (parsedRows.length > 0) {
-          break;
+        const currentText = String(text || "").trim();
+        if (!currentText) {
+          continue;
         }
-      } catch {
+        ocrTexts.push(currentText);
+        ocrRows.push(...extractRowsFromText(currentText));
+      } catch (error) {
+        if (typeof addLog === "function") {
+          addLog("warn", `OCR 失败，已跳过图片: ${shortText(error.message || "未知错误", 120)}`, {
+            postId: post.postId,
+            imageUrl
+          });
+        }
         continue;
       }
+    }
+
+    ocrText = ocrTexts.join("\n").trim();
+    if (ocrRows.length > 0) {
+      parsedRows = mergeRowsBySymbol(ocrRows);
+    } else if (ocrText) {
+      parsedRows = mergeRowsBySymbol(extractRowsFromText(ocrText));
     }
   }
 
@@ -1762,6 +2108,10 @@ async function collectSuperLudinggongSnapshots(inputConfig, processedPostIds = [
     });
   };
 
+  if (config.ocrEnabled && !QWEN_OCR_API_KEY) {
+    addLog("warn", "未配置 QWEN_OCR_API_KEY，图片 OCR 将被跳过（仅可解析帖子正文文本）");
+  }
+
   const rawCandidates =
     mode === "backfill"
       ? hasTargetPostIds
@@ -1803,7 +2153,7 @@ async function collectSuperLudinggongSnapshots(inputConfig, processedPostIds = [
       continue;
     }
 
-    const snapshot = await parseSnapshotFromPost(post, config);
+    const snapshot = await parseSnapshotFromPost(post, config, addLog);
     if (!snapshot) {
       continue;
     }

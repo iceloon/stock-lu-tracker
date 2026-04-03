@@ -55,6 +55,32 @@ function formatNumber(value, digits = 2) {
   });
 }
 
+function toNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
+}
+
+function normalizeMarketValue(qty, price, marketValue, floatingPnl) {
+  const expected = qty > 0 && Number.isFinite(price) ? qty * price : null;
+  if (!(Number.isFinite(expected) && expected > 0)) {
+    return Number.isFinite(marketValue) ? marketValue : null;
+  }
+
+  if (!(Number.isFinite(marketValue) && marketValue > 0)) {
+    return expected;
+  }
+
+  const ratio = marketValue / expected;
+  if (!Number.isFinite(ratio) || ratio < 0.2 || ratio > 5) {
+    if (Number.isFinite(floatingPnl) && floatingPnl > expected * 0.5 && floatingPnl < expected * 1.5) {
+      return floatingPnl;
+    }
+    return expected;
+  }
+
+  return marketValue;
+}
+
 function monthLabelByDate(value) {
   if (!value) {
     return "-";
@@ -231,16 +257,13 @@ function renderSnapshot() {
 
   const rows = snapshot.rows
     .map((item) => {
-      const qtyRaw = Number.isFinite(Number(item.holdingQty))
-        ? Number(item.holdingQty)
-        : Number(item.changeQty) || 0;
-      const costRaw = Number.isFinite(Number(item.referenceCost))
-        ? Number(item.referenceCost)
-        : Number(item.latestCost);
-      const latestPriceRaw = Number.isFinite(Number(item.latestPrice)) ? Number(item.latestPrice) : null;
-      const marketValueRaw = Number.isFinite(Number(item.marketValue)) ? Number(item.marketValue) : null;
-      const floatingPnlRaw = Number.isFinite(Number(item.floatingPnl)) ? Number(item.floatingPnl) : null;
-      const pnlPctRaw = Number.isFinite(Number(item.pnlPct)) ? Number(item.pnlPct) : null;
+      const qtyRaw = toNumber(item.holdingQty) ?? toNumber(item.changeQty) ?? 0;
+      const costRaw = toNumber(item.referenceCost) ?? toNumber(item.latestCost);
+      const latestPriceRaw = toNumber(item.latestPrice);
+      const marketValueRaw = toNumber(item.marketValue);
+      const floatingPnlRaw = toNumber(item.floatingPnl);
+      const pnlPctRaw = toNumber(item.pnlPct);
+      const marketValueDisplay = normalizeMarketValue(qtyRaw, latestPriceRaw, marketValueRaw, floatingPnlRaw);
 
       const pnlClass = floatingPnlRaw > 0 ? "pos" : floatingPnlRaw < 0 ? "neg" : "";
       const pctClass = pnlPctRaw > 0 ? "pos" : pnlPctRaw < 0 ? "neg" : "";
@@ -253,7 +276,7 @@ function renderSnapshot() {
           <td class="mono">${qtyText}</td>
           <td class="mono">¥ ${formatNumber(costRaw, 3)}</td>
           <td class="mono">${latestPriceRaw === null ? "-" : `¥ ${formatNumber(latestPriceRaw, 3)}`}</td>
-          <td class="mono">${marketValueRaw === null ? "-" : `¥ ${formatNumber(marketValueRaw, 3)}`}</td>
+          <td class="mono">${marketValueDisplay === null ? "-" : `¥ ${formatNumber(marketValueDisplay, 3)}`}</td>
           <td class="mono ${pnlClass}">${floatingPnlRaw === null ? "-" : `¥ ${formatNumber(floatingPnlRaw, 3)}`}</td>
           <td class="mono ${pctClass}">${pnlPctRaw === null ? "-" : formatNumber(pnlPctRaw, 3)}</td>
         </tr>

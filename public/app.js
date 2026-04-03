@@ -180,8 +180,15 @@ function toRowModel(row) {
     marketValue = expected;
   }
 
-  if (marketValue !== null && marketValue < 100 && expected !== null && expected > 10_000) {
-    marketValue = expected;
+  if (marketValue !== null && expected !== null && expected > 0) {
+    const ratio = marketValue / expected;
+    if (!Number.isFinite(ratio) || ratio < 0.2 || ratio > 5) {
+      if (floatingPnl !== null && floatingPnl > expected * 0.5 && floatingPnl < expected * 1.5) {
+        marketValue = floatingPnl;
+      } else {
+        marketValue = expected;
+      }
+    }
   }
 
   let qualityScore = 10;

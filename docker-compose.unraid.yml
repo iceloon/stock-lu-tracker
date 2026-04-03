@@ -9,7 +9,8 @@ services:
       TZ: Asia/Shanghai
       NODE_ENV: production
       PORT: 8787
-      TESSDATA_PREFIX: /app
+      QWEN_OCR_API_KEY: "请改成你的阿里百炼 API Key"
+      QWEN_OCR_MODEL: "qwen-vl-ocr-2025-11-20"
       ADMIN_PASSWORD: "请改成你的后台密码"
       ADMIN_COOKIE_SECURE: "false"
     user: "99:100"

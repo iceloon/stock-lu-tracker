@@ -15,7 +15,6 @@
   "author": "",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.21.2",
-    "tesseract.js": "^7.0.0"
+    "express": "^4.21.2"
   }
 }

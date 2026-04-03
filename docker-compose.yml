@@ -6,13 +6,19 @@ services:
     image: icekale/stock-lu-tracker:latest
     container_name: stock-lu
     ports:
-      - "8787:8787"
+      - "${HOST_PORT:-8787}:8787"
     environment:
       NODE_ENV: production
       PORT: 8787
-      TESSDATA_PREFIX: /app
       ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
       ADMIN_COOKIE_SECURE: ${ADMIN_COOKIE_SECURE:-false}
+      OCR_CACHE_MAX_ITEMS: ${OCR_CACHE_MAX_ITEMS:-1200}
+      OCR_CACHE_TTL_MINUTES: ${OCR_CACHE_TTL_MINUTES:-1440}
+      QWEN_OCR_API_KEY: ${QWEN_OCR_API_KEY:-}
+      QWEN_OCR_MODEL: ${QWEN_OCR_MODEL:-qwen-vl-ocr-2025-11-20}
+      QWEN_OCR_BASE_URL: ${QWEN_OCR_BASE_URL:-https://dashscope.aliyuncs.com/compatible-mode/v1}
+      QWEN_OCR_TIMEOUT_MS: ${QWEN_OCR_TIMEOUT_MS:-60000}
+      QWEN_OCR_MAX_TOKENS: ${QWEN_OCR_MAX_TOKENS:-4096}
     volumes:
       - ./data:/app/data
     restart: unless-stopped

@@ -6,6 +6,7 @@
 - 自动识别最新持仓帖（文本 + 图片 OCR）
 - 自动入库：生成“最新持仓快照”，并自动写入交易流水（加仓/减仓）
 - 自动定时同步（默认每 180 分钟）
+- 图片 OCR 默认使用阿里百炼 `qwen-vl-ocr-2025-11-20`
 
 ## 发布地址
 
@@ -80,9 +81,10 @@ docker run -d \
   -v $(pwd)/data:/app/data \
   -e NODE_ENV=production \
   -e PORT=8787 \
+  -e QWEN_OCR_API_KEY='你的阿里百炼 API Key' \
+  -e QWEN_OCR_MODEL='qwen-vl-ocr-2025-11-20' \
   -e ADMIN_PASSWORD='请改成你的后台密码' \
   -e ADMIN_COOKIE_SECURE=false \
-  -e TESSDATA_PREFIX=/app \
   icekale/stock-lu-tracker:latest
 ```
 
@@ -102,6 +104,20 @@ docker compose up -d
 ```yaml
 ADMIN_PASSWORD: "请改成你的后台密码"
 ADMIN_COOKIE_SECURE: "false"
+```
+
+OCR 需配置阿里百炼 Key（必填）：
+
+```yaml
+QWEN_OCR_API_KEY: "你的阿里百炼 API Key"
+QWEN_OCR_MODEL: "qwen-vl-ocr-2025-11-20"
+```
+
+可选 OCR 调优：
+
+```yaml
+QWEN_OCR_TIMEOUT_MS: "60000"
+QWEN_OCR_MAX_TOKENS: "4096"
 ```
 
 可选性能参数（默认可不填）：
@@ -134,7 +150,8 @@ services:
       TZ: Asia/Shanghai
       NODE_ENV: production
       PORT: 8787
-      TESSDATA_PREFIX: /app
+      QWEN_OCR_API_KEY: "你的阿里百炼 API Key"
+      QWEN_OCR_MODEL: "qwen-vl-ocr-2025-11-20"
       ADMIN_PASSWORD: "请改成你的后台密码"
       ADMIN_COOKIE_SECURE: "false"
     user: "99:100"
